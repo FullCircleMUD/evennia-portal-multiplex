@@ -2,6 +2,21 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — an admin can reach every player again
+
+107 tests. `broadcast_to_all_instances(message)` sends a message to every session on the Portal,
+whichever instance owns it.
+
+An admin command that messages everyone calls `SESSION_HANDLER.announce_all` on its Server. On a
+single-instance game that reaches every player; under several it reaches one instance's sessions, and
+the same game code quietly becomes partial. That is a regression this library causes rather than a
+feature it is being asked to add, which is why it belongs here.
+
+The Portal's own `announce_all` already reaches everybody, because it holds every socket. Nothing in
+Evennia lets a Server ask for it, so what was built is the asking: a command, and a responder that
+passes the message straight through. It reaches every *session*, including anyone at the login screen
+who has not authenticated.
+
 ## 2026-09-04 — a Server can ask for a move
 
 103 tests, linter clean. The last of the three processes closed, and with it the only piece that had

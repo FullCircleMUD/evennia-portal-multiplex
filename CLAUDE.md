@@ -22,14 +22,14 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 103 tests, linters clean, no uncovered cases. **Nothing has been booted.** All
-three processes are complete: a Server boots and registers or refuses to start, a player connects and
-lands on the default instance, and a Server can ask for one of its sessions to be moved. See
-[docs/progress.md](docs/progress.md).
+**Built, unproven.** 107 tests, linters clean, no uncovered cases. **Nothing has been booted.** All
+four processes are complete: a Server boots and registers or refuses to start, a player connects and
+lands on the default instance, a Server can ask for one of its sessions to be moved, and an admin can
+reach every player on every instance. See [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
-1. [docs/architecture.md](docs/architecture.md) — the three processes the library carries out, each as
+1. [docs/architecture.md](docs/architecture.md) — the four processes the library carries out, each as
    a step list before the prose, and what is unfinished. **Start here.**
 2. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
    starts here**, not in the code.
@@ -135,6 +135,7 @@ evennia-portal-multiplex/
 │       ├── sessionhandler.py        # routing what the Portal says about a session
 │       ├── move.py                  # the three-step move
 │       ├── query.py                 # MultiplexQueryRegistry
+│       ├── announce.py              # reaching every player, whichever instance
 │       ├── startup.py               # refusing to start when unregistered
 │       ├── launcher.py              # `evennia server_start`
 │       ├── evennia_patch.py         # a local fix for an Evennia bug. Deletable

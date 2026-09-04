@@ -2,12 +2,12 @@
 
 How the library is put together, which module does what, and what is not built yet.
 
-Three processes make up everything it does: **a Server booting and registering**, **a player
-connecting**, and **moving a session between Servers**. Each has its own section below, and each
-starts with the steps in order before the prose explaining them. All three are complete; none has been
-run against live instances.
+Four processes make up everything it does: **a Server booting and registering**, **a player
+connecting**, **moving a session between Servers**, and **announcing to every player**. Each has its
+own section below, and each starts with the steps in order before the prose explaining them. All four
+are complete; none has been run against live instances.
 
-The consumer's whole API is one function, `send_session` — see *What a consumer calls*.
+Two functions are the whole consumer API: `send_session` and `broadcast_to_all_instances`.
 
 ## The problem
 
@@ -39,6 +39,7 @@ argument, which is why they test as plain data handling.
 | `sessionhandler.py` | Routes everything the Portal says about a session to the instance holding it |
 | `move.py` | The move, its outcomes, the command that asks for one, and `send_session` |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
+| `announce.py` | `MultiplexAnnounce` and `broadcast_to_all_instances` — reaching every player at once |
 | `startup.py` | Refusing to start when this instance is not registered |
 | `amp_client.py` | The Server's side of the AMP link: runs that check on connect, and names a Portal it could not reach |
 | `launcher.py` | `evennia server_start` — starts a Server without stopping another |
@@ -206,7 +207,8 @@ mid-loop. The extra message lands on a Server that has already dropped everythin
 do, which is cheaper than a copy that goes stale silently.
 
 `announce_all` needs none of this. It writes to the Portal's own sockets and never involves a Server,
-so it already reaches every player on every instance.
+so it already reaches every player on every instance — see *Process four*, which is about asking for
+it rather than doing it.
 
 `stop_server` — the Portal telling a Server to shut down — is not on this path. It only runs in
 portal-interactive mode, and a plain Portal shutdown leaves the Servers running.
@@ -307,11 +309,50 @@ Building before releasing would avoid stranding anyone, but it leaves a window w
 on two Servers at once, and a release that then failed would leave a ghost standing in the origin's
 world. Releasing first trades that for a stranded player, which the rollback recovers.
 
+# Process four — announcing to every player
+
+An admin messaging everyone. Short, because the Portal already does the work.
+
+- **[consumer]** an admin command decides to say something to everyone, and calls
+  `broadcast_to_all_instances`
+- **[library]** the Server asks its Portal, carrying the message
+- **[library]** the Portal's responder passes it to `announce_all`
+- **[Evennia]** every session on the Portal is written to, whichever instance owns it
+
+## Why it is here at all
+
+An admin command that messages everyone calls `SESSION_HANDLER.announce_all` on its Server, and on a
+single-instance game that reaches every player. Under several Servers it reaches one instance's
+sessions, because that is all a Server's session handler holds — the rest are on other handlers in
+other processes.
+
+So it is a regression this library causes rather than a feature it is being asked to add: the same
+game code did the right thing before it was installed. What belongs here is what breaks *because*
+there is more than one Server.
+
+The Portal has its own `announce_all`, and that one already reaches every player, because it holds
+every socket. What Evennia has no way to do is ask for it from a Server — the Server-to-Portal admin
+operations disconnect, sync and shut down, and none of them speaks. So there is nothing to build but
+the asking, and the responder is a pass-through.
+
+**Every session, not every player.** That includes anyone at the login screen who has not
+authenticated: the Portal writes to sockets, not accounts. Right for "the game is going down in five
+minutes"; a consumer wanting only logged-in players wants their own Server-side loop, on each
+instance.
+
 # Not designed yet
 
-- **A Server asking the Portal to announce to everyone.** The Portal can already reach every player on
-  every instance, because it holds every socket. What is missing is a way for a Server to ask for it —
-  which is what an admin broadcast command would need. The command itself is a game concept and the
-  consumer's; the Server-to-Portal half would be here.
-- **Where an instance lands when none of the defaults is attached.** `MULTIPLEX_DEFAULT_INSTANCE`
-  takes a single name today; an ordered list was discussed and not built.
+- **A new session arriving while the default instance is down.** `connect` announces it to whichever
+  Server spoke to the Portal most recently, which is the failure the rest of process two exists to
+  remove — silent, and dependent on timing.
+
+  The agreed answer is to refuse at the front door: tell the player the game is not available and
+  close the connection. **Not** to fall through to another instance. In a deployment where one
+  instance is the entry point, the others would only send the player back to it.
+
+  The Portal can do this alone, since it holds the socket — the "not right now" path does not depend
+  on the thing that is broken. A session already bound to an instance that goes down still falls back
+  to the default, because it is in the game and its traffic has to go somewhere real. Only the front
+  door refuses.
+
+  `MULTIPLEX_DEFAULT_INSTANCE` stays a single name.

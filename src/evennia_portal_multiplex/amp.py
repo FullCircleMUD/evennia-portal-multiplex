@@ -17,6 +17,7 @@ nothing logged. AR-07 exists to catch exactly that.
 See docs/test-plan.md § AR.
 """
 
+from .announce import MultiplexAnnounce
 from .log import portal_multiplex_log
 from .move import (
     NO_SUCH_SESSION,
@@ -127,6 +128,21 @@ def make_amp_protocol(base, registry):
             return move_session(registry, session, destination).addCallback(
                 lambda outcome: {"moved": outcome[0], "outcome": outcome[1]}
             )
+
+        @MultiplexAnnounce.responder
+        @evennia_amp.catch_traceback
+        def portal_receive_announce(self, message):
+            """Say it to every session this Portal holds.
+
+            A pass-through to the Portal's own `announce_all`, which already
+            reaches every player whichever Server owns their session. The
+            Server's method of the same name reaches only its own handler's
+            sessions.
+            """
+            import evennia
+
+            evennia.PORTAL_SESSION_HANDLER.announce_all(message)
+            return {}
 
         def connectionLost(self, reason):
             """Drop this connection from the registry, then tear down as usual.

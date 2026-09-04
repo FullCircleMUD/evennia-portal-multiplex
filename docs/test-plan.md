@@ -15,11 +15,15 @@ Behaviour is agreed here first, before any test or code — see
 
 | Prefix | Covers |
 |---|---|
+| `AN` | Announcing to every player, whichever instance they are on |
 | `AR` | The AMP responder that records an announcement |
+| `CP` | The Server's AMP client protocol, where the startup check runs |
+| `FC` | The Server's AMP client factory, and a Portal it could not reach |
 | `IA` | An instance announcing its name to the Portal |
 | `IN` | Installing the machinery into a running Evennia |
 | `IR` | The instance registry — which AMP connection belongs to which instance |
 | `LC` | Launcher commands the library adds to `evennia` |
+| `MC` | The command that asks for a move, and the API a consumer calls |
 | `MV` | Moving a session between instances |
 | `PT` | A local patch for an Evennia bug |
 | `QY` | Asking the Portal about its state |
@@ -360,6 +364,38 @@ problem this transport does not have.
 | MC-09 | A payload is carried as JSON on the command, and a move without one carries nothing | test_mc_09_a_payload_is_carried_as_json |
 | MC-10 | The responder puts the payload where the sync data will carry it to the destination | test_mc_10_the_payload_is_put_where_the_sync_data_carries_it |
 | MC-11 | A move with no payload leaves the session's existing data untouched | test_mc_11_no_payload_leaves_the_session_alone |
+
+### AN — announcing to every player
+
+An admin command that messages everyone calls `SESSION_HANDLER.announce_all` on the Server. On a
+single-instance game that reaches every player. Under several Servers it reaches one instance's
+sessions, because that is all a Server's session handler holds — the rest are on other handlers in
+other processes, with no game-level path between them.
+
+That is a regression this library causes, not a feature it is being asked to add: the same game code
+did the right thing before it was installed. What belongs here is what breaks *because* there is more
+than one Server.
+
+**The Portal has its own `announce_all`, and that one reaches every player**, because the Portal holds
+every socket whichever Server owns the session. So there is nothing to build but the asking: the
+Server-to-Portal admin operations disconnect, sync and shut down, and none of them speaks.
+
+The responder calls that method and does nothing else. No looping, no session lookup, no outcome.
+
+**The command carries the message and nothing else.** Who may send one, what it says and whether the
+game wants a prefix on it are the consumer's; this delivers a string to every session.
+
+**The consumer's call is `broadcast_to_all_instances`.** Named for what it does: `announce` leaves a
+reader guessing who it reaches, and there is no parameter to answer them with. It reaches every
+*session*, including anyone at the login screen who has not authenticated — the Portal writes to
+sockets, not accounts.
+
+| ID | Case | Test function |
+|---|---|---|
+| AN-01 | The message survives the round trip | test_an_01_the_message_survives_the_round_trip |
+| AN-02 | The responder announces to every session the Portal holds | test_an_02_the_responder_announces_to_every_session |
+| AN-03 | The responder is registered under the command's key | test_an_03_the_responder_is_registered_under_the_commands_key |
+| AN-04 | `broadcast_to_all_instances` asks this Server's Portal to say it | test_an_04_broadcast_asks_its_portal_to_say_it |
 
 ### LC — launcher commands
 

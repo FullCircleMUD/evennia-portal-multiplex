@@ -18,6 +18,10 @@ from twisted.internet import defer
 from twisted.internet.error import ConnectionDone
 
 from evennia_portal_multiplex.amp import make_amp_protocol, record_announcement
+from evennia_portal_multiplex.announce import (
+    MultiplexAnnounce,
+    broadcast_to_all_instances,
+)
 from evennia_portal_multiplex.amp_client import (
     make_amp_client_factory,
     make_amp_client_protocol,
@@ -424,6 +428,68 @@ class TestSendSession(unittest.TestCase):
         deferred.addCallback(captured.append)
         self.assertTrue(captured, "send_session had not resolved")
         return captured[0]
+
+
+class TestAnnounce(unittest.TestCase):
+    """AN — announcing to every player."""
+
+    def _base(self):
+        """A stand-in for Evennia's Portal AMP protocol."""
+
+        class FakeAMPProtocol:
+            def data_in(self, packed_data):
+                return packed_data
+
+            def portal_receive_adminserver2portal(self, packed_data):
+                return None
+
+            def connectionLost(self, reason):
+                return None
+
+        return FakeAMPProtocol
+
+    def test_an_01_the_message_survives_the_round_trip(self):
+        """AN-01: a type declared wrongly fails on the wire, not where written."""
+        arguments = {"message": "The game is going down in five minutes."}
+        box = MultiplexAnnounce.makeArguments(arguments, None)
+        self.assertEqual(MultiplexAnnounce.parseArguments(box, None), arguments)
+
+    def test_an_02_the_responder_announces_to_every_session(self):
+        """AN-02: the Portal holds every socket, whichever Server owns it.
+
+        The Server's own `announce_all` reaches its own handler's sessions,
+        which under several instances is a fraction of the players. The
+        Portal's reaches all of them, and this is the way to ask for it.
+        """
+        protocol = make_amp_protocol(self._base(), InstanceRegistry())()
+        sessions = mock.Mock()
+        with mock.patch("evennia.PORTAL_SESSION_HANDLER", sessions, create=True):
+            protocol.portal_receive_announce(message="going down")
+        sessions.announce_all.assert_called_once_with("going down")
+
+    def test_an_03_the_responder_is_registered_under_the_commands_key(self):
+        """AN-03: the same trap as AR-07, QY-07 and MC-06."""
+        from evennia.server.portal.amp_server import AMPServerProtocol
+
+        generated = make_amp_protocol(AMPServerProtocol, InstanceRegistry())
+        _command, responder = generated._commandDispatch[
+            MultiplexAnnounce.commandName
+        ]
+        self.assertIs(responder, generated.portal_receive_announce)
+
+    def test_an_04_broadcast_asks_its_portal_to_say_it(self):
+        """AN-04: the consumer's side — a string, and nothing about AMP."""
+        protocol = mock.Mock()
+        protocol.callRemote.return_value = defer.succeed({})
+        service = mock.Mock()
+        service.amp_protocol = protocol
+        with mock.patch(
+            "evennia.EVENNIA_SERVER_SERVICE", service, create=True
+        ):
+            broadcast_to_all_instances("going down")
+        call = protocol.callRemote.call_args
+        self.assertIs(call.args[0], MultiplexAnnounce)
+        self.assertEqual(call.kwargs["message"], "going down")
 
 
 class TestLauncherCommands(unittest.TestCase):

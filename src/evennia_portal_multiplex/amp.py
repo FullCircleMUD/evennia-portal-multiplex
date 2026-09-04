@@ -17,6 +17,7 @@ nothing logged. AR-07 exists to catch exactly that.
 See docs/test-plan.md § AR.
 """
 
+from .query import MultiplexQueryRegistry
 from .services import INSTANCE_KEY
 
 
@@ -64,6 +65,21 @@ def make_amp_protocol(base, registry):
             result = super().portal_receive_adminserver2portal(packed_data)
             record_announcement(registry, self, self.data_in(packed_data))
             return result
+
+        @MultiplexQueryRegistry.responder
+        @evennia_amp.catch_traceback
+        def portal_receive_query_registry(self):
+            """Answer which instances are attached.
+
+            The registry is read here rather than captured when this class was
+            built: a copy would answer correctly once and be stale for the
+            life of the process.
+
+            The decorator is what makes this reachable. Without it the method
+            sits on the class and AMP, routing by its own table, never calls
+            it — nothing raised, the query simply unhandled. See QY-07.
+            """
+            return {"attached": evennia_amp.dumps(registry.attached())}
 
         def connectionLost(self, reason):
             """Drop this connection from the registry, then tear down as usual.

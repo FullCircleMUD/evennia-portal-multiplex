@@ -21,7 +21,9 @@ Behaviour is agreed here first, before any test or code — see
 | `IR` | The instance registry — which AMP connection belongs to which instance |
 | `LC` | Launcher commands the library adds to `evennia` |
 | `MV` | Moving a session between instances |
+| `QY` | Asking the Portal about its state |
 | `RT` | Routing one send to one instance |
+| `SR` | An instance checking its own registration |
 | `SB` | Which instance a session belongs to |
 
 ## Fixtures
@@ -299,3 +301,64 @@ nowhere near the cause.
 | IN-07 | `ready()` stashes the class each setting named before repointing it | test_in_07_ready_stashes_and_repoints_each_setting |
 | IN-08 | Each generated class subclasses whatever the consumer had configured | test_in_08_each_class_subclasses_what_the_consumer_had |
 | IN-09 | The Portal service, the AMP protocol and the session handler share one registry | test_in_09_all_three_share_one_registry |
+
+### QY — asking the Portal which instances are attached
+
+A Server can see its own side of the AMP link and nothing else. Whether its announcement was recorded,
+and what else is attached, are facts only the Portal holds — so a Server that failed to register looks
+exactly like one that succeeded, until something tries to reach it.
+
+This is the round trip that closes that, and the first thing this library adds to the AMP protocol
+rather than intercepts on it.
+
+**One command, one question, one answer.** AMP is already a command-dispatch protocol: a key, typed
+arguments, a declared response, and a table that routes by command. A generic query command carrying a
+question field would rebuild that a layer up and worse — one response shape forced to serve every
+question, so a pickled blob rather than declared types, and an unknown-question case of our own to get
+wrong. Another question later is another command of this shape, a dozen lines in the obvious place.
+
+Because the command *is* the question, there is no branching to test. What was going to be a decision
+function is now `registry.attached()`, already covered by IR-08 — so these cases aim one layer down, at
+the responder itself. That is where the only new code is.
+
+Reading that answer is a separate unit, covered separately: this section ends at *having* the list.
+What an instance concludes from it — most usefully, whether its own announcement landed — takes the
+answer as an argument and asks the Portal nothing.
+
+There is deliberately no pre-move check. `move_session` already refuses an unattached destination from
+the Portal's own registry, with no round trip at all — asking first would buy nothing unless the game
+wanted to make a different decision rather than report the failure.
+
+| ID | Case | Test function |
+|---|---|---|
+| QY-01 | The responder answers with every instance currently attached | test_qy_01_answers_with_every_attached_instance |
+| QY-02 | A Portal with nothing attached answers with an empty list, not an error | test_qy_02_an_empty_portal_answers_with_an_empty_list |
+| QY-03 | The registry is read when the question arrives, so a registration made since is included | test_qy_03_reads_the_registry_when_the_question_arrives |
+| QY-05 | A Server asking receives the list back, decoded | test_qy_05_a_server_asking_receives_the_decoded_answer |
+| QY-07 | The responder is registered under the command's key in the class's dispatch table | test_qy_07_the_responder_is_registered_under_the_commands_key |
+
+### SR — an instance checking its own registration
+
+The other half of QY, and deliberately separate from it. QY ends at *having* the list; this reads it.
+
+**It asks the Portal nothing.** The answer is passed in, so a caller that already queried for other
+reasons pays for one round trip rather than two, and this stays testable with no AMP anywhere near it.
+
+**"Am I registered" rather than "is everyone".** No instance knows what order the others boot in, so
+"is everyone here" is unanswerable at startup and would only produce a retry loop. Whether an
+instance's own announcement landed is self-contained, and something it can act on: a Server that finds
+itself missing knows its handshake did not take, which is otherwise indistinguishable from a Portal
+that has simply not been asked.
+
+**The comparison is against `MULTIPLEX_INSTANCE_ID`**, resolved through `config`, so a caller does not
+have to know which setting names an instance. That is most of what this function is for — the check
+itself is one containment test.
+
+`[TBD — needs discussion: what an instance should do when it finds it is not registered. Retry, log
+and continue, or refuse to finish starting. Nothing calls this yet, and that decision belongs with
+whatever does.]`
+
+| ID | Case | Test function |
+|---|---|---|
+| SR-01 | True when this instance's name is in the answer | test_sr_01_true_when_this_instance_is_in_the_answer |
+| SR-02 | False when it is not | test_sr_02_false_when_it_is_not |

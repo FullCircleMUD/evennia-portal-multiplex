@@ -11,9 +11,17 @@ Discovered by Django's test runner via runtests.py at the repository root.
 import unittest
 from unittest import mock
 
+from evennia.server.portal import amp as amp_module
+from twisted.internet import defer
+
 from evennia_portal_multiplex.amp import make_amp_protocol, record_announcement
 from evennia_portal_multiplex.binding import bind, connection_for, instance_for
 from evennia_portal_multiplex.launcher import server_start
+from evennia_portal_multiplex.query import (
+    MultiplexQueryRegistry,
+    am_i_registered,
+    query_registry,
+)
 from evennia_portal_multiplex.registry import InstanceRegistry
 from evennia_portal_multiplex.routing import sending_to
 from django.conf import settings
@@ -897,3 +905,107 @@ class TestInstallation(unittest.TestCase):
         handler_registry = handler_factory.call_args.args[1]
         self.assertIsInstance(portal_registry, InstanceRegistry)
         self.assertIs(portal_registry, handler_registry)
+
+
+class TestPortalQuery(unittest.TestCase):
+    """QY — asking the Portal which instances are attached."""
+
+    def _base(self):
+        """A stand-in for Evennia's AMP protocol.
+
+        Carries what `make_amp_protocol`'s overrides call through to. Not a
+        CommandLocator — QY-07 uses Evennia's real class, because the dispatch
+        table is the thing under test there.
+        """
+
+        class FakeAMPProtocol:
+            def data_in(self, packed_data):
+                return packed_data
+
+            def portal_receive_adminserver2portal(self, packed_data):
+                return None
+
+            def connectionLost(self, reason):
+                return None
+
+        return FakeAMPProtocol
+
+    def _protocol(self, *names):
+        registry = InstanceRegistry()
+        for name in names:
+            registry.register(name, mock.Mock(name=name))
+        return make_amp_protocol(self._base(), registry)(), registry
+
+    def _attached(self, protocol):
+        return amp_module.loads(
+            protocol.portal_receive_query_registry()["attached"]
+        )
+
+    def test_qy_01_answers_with_every_attached_instance(self):
+        """QY-01: the fact only the Portal holds."""
+        protocol, _registry = self._protocol("first", "second")
+        self.assertEqual(self._attached(protocol), ["first", "second"])
+
+    def test_qy_02_an_empty_portal_answers_with_an_empty_list(self):
+        """QY-02: nothing attached is an answer, not a failure."""
+        protocol, _registry = self._protocol()
+        self.assertEqual(self._attached(protocol), [])
+
+    def test_qy_03_reads_the_registry_when_the_question_arrives(self):
+        """QY-03: not a copy taken when the protocol class was built.
+
+        A captured list would read correctly on the first query and be wrong
+        on every one after — the shape that looks like it works.
+        """
+        protocol, registry = self._protocol("first")
+        self.assertEqual(self._attached(protocol), ["first"])
+        registry.register("second", mock.Mock())
+        self.assertEqual(self._attached(protocol), ["first", "second"])
+
+    def test_qy_05_a_server_asking_receives_the_decoded_answer(self):
+        """QY-05: what comes back is data, not a line in a log."""
+        connection = mock.Mock()
+        connection.callRemote.return_value = defer.succeed(
+            {"attached": amp_module.dumps(["first", "second"])}
+        )
+        received = []
+        query_registry(connection).addCallback(received.append)
+        self.assertEqual(received, [["first", "second"]])
+        self.assertEqual(
+            connection.callRemote.call_args.args[0], MultiplexQueryRegistry
+        )
+
+    def test_qy_07_the_responder_is_registered_under_the_commands_key(self):
+        """QY-07: forget the decorator and the method is never called.
+
+        Nothing raises: it sits on the class, AMP routes by its own table, and
+        the query fails as an unhandled command. QY-01 would not catch it,
+        because it calls the method directly.
+        """
+        from evennia.server.portal.amp_server import AMPServerProtocol
+
+        generated = make_amp_protocol(AMPServerProtocol, InstanceRegistry())
+        key = MultiplexQueryRegistry.commandName
+        _command, responder = generated._commandDispatch[key]
+        self.assertIs(responder, generated.portal_receive_query_registry)
+
+
+class TestSelfRegistration(unittest.TestCase):
+    """SR — an instance checking its own registration."""
+
+    def _me(self, name):
+        """This instance's configured name, as `config` resolves it."""
+        return mock.patch(
+            "evennia_portal_multiplex.query.get_instance_id", return_value=name
+        )
+
+    def test_sr_01_true_when_this_instance_is_in_the_answer(self):
+        """SR-01: the announcement landed."""
+        with self._me("second"):
+            self.assertTrue(am_i_registered(["first", "second"]))
+
+    def test_sr_02_false_when_it_is_not(self):
+        """SR-02: the handshake did not take, which nothing else would say."""
+        with self._me("second"):
+            self.assertFalse(am_i_registered(["first", "third"]))
+            self.assertFalse(am_i_registered([]))

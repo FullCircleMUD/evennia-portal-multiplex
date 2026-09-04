@@ -342,6 +342,31 @@ instance.
 
 # Not designed yet
 
+- **`PSYNC` hands every session to whichever Server just attached.** The Portal answers a Server's
+  handshake with `get_all_sync_data()` — all of its sessions, regardless of which instance owns them.
+  The attaching Server then builds a `ServerSession` for each, and any that carries a `uid` is
+  attached to *that instance's* account of the same number.
+
+  Two consequences, seen live. Every instance believes it owns every session. And each attach
+  announces `SERVER_RESTART_MSG` to all of them, so players on unrelated instances are told the server
+  restarted whenever any instance starts — which reads as instability that is not happening.
+
+  The identity half is the same hazard MV-03 covers, arriving by a path the move never touches: it
+  looks harmless only because two demo databases number their superuser identically.
+
+  Nothing here has been touched yet. The Portal's side of `PSYNC` is `amp.py`'s territory and already
+  has the registry to filter by.
+
+- **A move announces a disconnect to the players left behind.** The origin receives `PDISCONN` and
+  tells everyone still on that instance that the mover disconnected. The mover sees nothing.
+
+  Not established as a problem. Someone watching a character leave for another shard has been told
+  something true, and the alternative is silence. `[TBD — needs investigation: what the whole sequence
+  looks like to the people watching, and then a decision on whether anything should change.]`
+
+- **A player who moves sees `SERVER_RESTART_MSG`; a player moved by somebody else does not.** Both
+  observed live, on the same destination, through the same mechanism. Unexplained.
+
 - **A new session arriving while the default instance is down.** `connect` announces it to whichever
   Server spoke to the Portal most recently, which is the failure the rest of process two exists to
   remove — silent, and dependent on timing.

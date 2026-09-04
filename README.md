@@ -16,14 +16,16 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, unproven.** The mechanism is built and unit-tested — 107 tests — and **has never been run
-against live instances.** A Server registers with its Portal on connect and refuses to start if that
-did not land; a player connecting lands on the default instance and everything said about their
-session follows it; a Server can ask for one of its sessions to be handed to another instance; and an
-admin can reach every player on every instance at once.
+**Working, proven once.** 107 tests, and run live: three Servers behind one Portal, with a telnet
+session moved between them seven times on one unbroken connection. A Server registers with its Portal
+on connect and refuses to start if that did not land; a player connecting lands on the default
+instance and everything said about their session follows it; a Server can ask for one of its sessions
+to be handed to another instance and is told the outcome; and an admin can reach every player on every
+instance at once.
 
-Not usable yet — nothing has been booted. See [docs/progress.md](docs/progress.md) for what exists and
-[docs/architecture.md](docs/architecture.md) for what is still open.
+Early. One run, on one machine, against demo gamedirs, and it turned up things still to work out —
+see [docs/progress.md](docs/progress.md) for what that run proved and
+[docs/architecture.md](docs/architecture.md) for what it left open.
 
 ## Is this for me?
 

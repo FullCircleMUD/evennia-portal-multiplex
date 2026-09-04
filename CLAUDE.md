@@ -13,19 +13,21 @@ Instructions for Claude (and other LLM agents) working in this repository.
 player's session from one server to another on command — without the session being dropped or changed,
 whatever protocol it is using. Tagline: **"One portal, many servers, one session."**
 
-The mechanism is built and unit-tested. **It has never been run against live instances.** Read
-[docs/architecture.md](docs/architecture.md) before touching anything — it covers the three processes
-the library carries out, and its *not designed yet* section is where the remaining loose ends are.
+The mechanism is built, unit-tested, and has been run live once — three Servers behind one Portal,
+with a session moved between them. Read [docs/architecture.md](docs/architecture.md) before touching
+anything — it covers the four processes the library carries out, and its *not designed yet* section is
+where the loose ends are, including three the live run turned up.
 
 For the big-picture overview, read [README.md](README.md).
 For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 107 tests, linters clean, no uncovered cases. **Nothing has been booted.** All
-four processes are complete: a Server boots and registers or refuses to start, a player connects and
-lands on the default instance, a Server can ask for one of its sessions to be moved, and an admin can
-reach every player on every instance. See [docs/progress.md](docs/progress.md).
+**Working, proven once.** 107 tests, linters clean, no uncovered cases. All four processes are
+complete — a Server boots and registers or refuses to start, a player connects and lands on the
+default instance, a Server can ask for one of its sessions to be moved, and an admin can reach every
+player on every instance — and all four have been exercised against live instances. One run, on one
+machine, which turned up three things still to work out. See [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
@@ -113,10 +115,11 @@ evennia-portal-multiplex/
 ├── pyproject.toml
 ├── runtests.py                      # standalone test runner; no gamedir required
 ├── .gitignore
-├── examples/                        # three demo gamedirs. Never started
+├── examples/                        # three demo gamedirs, run live once
 ├── docs/                            # design wiki (humans + LLMs)
 │   ├── INDEX.md
 │   ├── architecture.md
+│   ├── installing.md
 │   ├── progress.md
 │   ├── test-plan.md
 │   ├── interoperability.md
@@ -149,7 +152,7 @@ evennia-portal-multiplex/
 
 `examples/` holds three demo gamedirs — `server1` runs the Portal, `server2` and `server3` symlink its
 source and run Servers only. All four settings files live in `server1/server/conf/` and cascade
-through `settings_common.py`. **Never started.**
+through `settings_common.py`. All three have been run together.
 
 No `contrib/` and no `db_router.py` — nothing opt-in exists and the library owns no tables.
 

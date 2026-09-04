@@ -2,6 +2,37 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — run live, three instances, one Portal
+
+First run against live instances. Three Servers behind one Portal, and a telnet session moved between
+them seven times on one unbroken connection — then an eighth move, of somebody else's session,
+requested by a superuser who stayed where they were.
+
+What that proves, in the order it happened:
+
+- **Registration.** Each Server announced itself, asked the Portal what it was holding, found itself
+  in the answer, and carried on. `attached: ['server1', 'server2', 'server3']`, read from in-game.
+- **Refusing to start.** server2's first attempt failed against a Portal that had no responder. It
+  logged the reason, stopped, and `server_start` reported it at the terminal with a pointer to the
+  log — which is how the misconfiguration was found at all.
+- **Reconnection.** An unrelated AMP drop reconnected and re-registered with nothing written to the
+  error log.
+- **Moving.** Seven moves across all three instances, on one socket. The destination's login screen
+  arrives on the same connection and the session is unauthenticated, as intended.
+- **The outcome.** `(True, 'moved')` came back to the superuser who asked. It is not visible when you
+  move your own session, because that session has left before the answer arrives.
+
+What the run found, all recorded in [architecture.md](architecture.md) under *Not designed yet*:
+
+- `PSYNC` hands every session to whichever Server just attached, so each instance believes it owns
+  every session — and each attach announces `SERVER_RESTART_MSG` to all of them.
+- A move announces a disconnect to the players left behind. Not established as a problem.
+- A player who moves sees the restart message; a player moved by somebody else does not. Unexplained.
+
+Two things cost time and neither was the library: a typo in `--settings`, which Evennia answers by
+silently falling back to the default settings file, and a `py` one-liner whose lambda could not see
+`self` — an unhandled error in an AMP callback drops the whole connection.
+
 ## 2026-09-04 — an admin can reach every player again
 
 107 tests. `broadcast_to_all_instances(message)` sends a message to every session on the Portal,

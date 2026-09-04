@@ -22,6 +22,7 @@ from evennia_portal_multiplex.query import (
     am_i_registered,
     query_registry,
 )
+from evennia_portal_multiplex.evennia_patch import install, make_patched_factory
 from evennia_portal_multiplex.registry import InstanceRegistry
 from evennia_portal_multiplex.startup import NotRegistered, check_registration
 from evennia_portal_multiplex.routing import sending_to
@@ -1072,3 +1073,77 @@ class TestStartupCheck(unittest.TestCase):
         self.assertIn("second", message)
         self.assertIn("first", message)
         self.assertIn("third", message)
+
+
+class TestEvenniaPatch(unittest.TestCase):
+    """PT — a local patch for an Evennia bug."""
+
+    def _configured(self):
+        """A protocol class standing in for whatever the setting names."""
+
+        class ConfiguredProtocol:
+            pass
+
+        return ConfiguredProtocol
+
+    def _base(self, configured):
+        """Evennia's factory, reduced to the parts buildProtocol touches."""
+
+        class FakeAMPClientFactory:
+            def __init__(self, server):
+                self.server = server
+                self.protocol = configured
+                self.reset_calls = 0
+
+            def resetDelay(self):
+                self.reset_calls += 1
+
+        return FakeAMPClientFactory
+
+    def test_pt_01_builds_the_class_the_setting_names(self):
+        """PT-01: the whole point — the setting is honoured again."""
+        configured = self._configured()
+        factory = make_patched_factory(self._base(configured))(mock.Mock())
+        self.assertIsInstance(factory.buildProtocol(None), configured)
+
+    def test_pt_02_install_replaces_the_factory_evennia_will_construct(self):
+        """PT-02: service.py looks the name up at call time, so this reaches it."""
+        from evennia.server import amp_client
+
+        original = amp_client.AMPClientFactory
+        try:
+            install()
+            self.assertIsNot(amp_client.AMPClientFactory, original)
+            self.assertTrue(issubclass(amp_client.AMPClientFactory, original))
+        finally:
+            amp_client.AMPClientFactory = original
+
+    def test_pt_03_does_everything_evennias_buildprotocol_did(self):
+        """PT-03: we reimplement it, so it has to do the same bookkeeping.
+
+        Miss the reconnect-delay reset and a flapping connection stops backing
+        off; miss the assignment and the Server has no protocol to send on.
+        """
+        configured = self._configured()
+        server = mock.Mock()
+        factory = make_patched_factory(self._base(configured))(server)
+
+        built = factory.buildProtocol(None)
+
+        self.assertEqual(factory.reset_calls, 1)
+        self.assertIs(server.amp_protocol, built)
+        self.assertIs(built.factory, factory)
+
+    def test_pt_04_canary_evennias_factory_still_ignores_the_setting(self):
+        """PT-04: passes while the bug exists. Failing here is good news.
+
+        When this goes red, Evennia has been fixed and `evennia_patch` should
+        be deleted along with its call in AppConfig.ready().
+        """
+        import inspect
+
+        from evennia.server.amp_client import AMPClientFactory
+
+        source = inspect.getsource(AMPClientFactory.buildProtocol)
+        self.assertIn("AMPServerClientProtocol()", source)
+        self.assertNotIn("self.protocol()", source)

@@ -21,6 +21,7 @@ Behaviour is agreed here first, before any test or code — see
 | `IR` | The instance registry — which AMP connection belongs to which instance |
 | `LC` | Launcher commands the library adds to `evennia` |
 | `MV` | Moving a session between instances |
+| `PT` | A local patch for an Evennia bug |
 | `QY` | Asking the Portal about its state |
 | `RT` | Routing one send to one instance |
 | `SR` | An instance checking its own registration |
@@ -408,3 +409,33 @@ module attribute would reach it, and that is worth confirming before it is relie
 
 ST-05 waits on the seam. It is the errback path — the address it names comes from the connection,
 which is the part that is not yet decided. ST-02 to ST-04 are the answered path and need none of it.
+
+### PT — a local patch for an Evennia bug
+
+`AMPClientFactory.__init__` resolves `settings.AMP_CLIENT_PROTOCOL_CLASS` into `self.protocol` and then
+never reads it: `buildProtocol` names `AMPServerClientProtocol` directly. So pointing that setting at a
+subclass has no effect, and nothing is raised or logged. The Portal-side twin in `amp_server.py` does
+use `self.protocol()`, which is what makes it a slip rather than a decision. Reproduced on 6.1.0 and
+present on `main`; reported upstream.
+
+**The patch restores the setting rather than routing around it.** A subclassed factory whose
+`buildProtocol` uses `self.protocol()`, installed by replacing the module attribute Evennia's Server
+service looks up. Everything else in this library then configures itself through
+`AMP_CLIENT_PROTOCOL_CLASS` the documented way, alongside the other class settings.
+
+**That is what makes it removable.** The library sets the setting whether or not the patch is
+installed. On a fixed Evennia, deleting the installer line changes nothing: Evennia honours the
+setting we were already setting, and builds the same class we were building. A patch that *replaced*
+the protocol class directly would have skipped the setting entirely, and removing it would have been a
+behaviour change.
+
+**PT-04 is a canary.** It asserts the bug is still present, so it passes today and fails the moment we
+upgrade to a fixed Evennia — which is the signal to delete the patch. A failure there is good news,
+and its name says so.
+
+| ID | Case | Test function |
+|---|---|---|
+| PT-01 | The patched factory builds the class the setting names | test_pt_01_builds_the_class_the_setting_names |
+| PT-02 | Installing it replaces the factory Evennia's Server service will construct | test_pt_02_install_replaces_the_factory_evennia_will_construct |
+| PT-03 | The patched `buildProtocol` does everything Evennia's did — reset the delay, hold the protocol on the service, set its factory, return it | test_pt_03_does_everything_evennias_buildprotocol_did |
+| PT-04 | Canary: Evennia's own factory still ignores the setting, so the patch is still needed | test_pt_04_canary_evennias_factory_still_ignores_the_setting |

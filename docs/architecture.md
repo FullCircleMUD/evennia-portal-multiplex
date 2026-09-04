@@ -44,6 +44,7 @@ argument, which is why they test as plain data handling.
 | `move.py` | The three-step move |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
 | `startup.py` | Refusing to start when this instance is not registered |
+| `amp_client.py` | The Server's AMP protocol: runs that check on connect, and shuts down if it fails |
 | `launcher.py` | `evennia server_start` — starts a Server without stopping another |
 | `evennia_patch.py` | A local fix for an Evennia bug. Deletable |
 | `apps.py` | The installer. The library's only way into either process |
@@ -55,11 +56,12 @@ that Evennia resolves later in `_init()`. That ordering is the whole reason this
 patching anything at runtime.
 
     Server boots
-      -> ready() repoints EVENNIA_SERVER_SERVICE_CLASS
+      -> ready() installs the Evennia patch, then repoints
+         EVENNIA_SERVER_SERVICE_CLASS and AMP_CLIENT_PROTOCOL_CLASS
       -> _init() builds our Server service
-      -> its AMP client dials the Portal
+      -> its AMP client dials the Portal, building our client protocol
       -> on connect, get_info_dict() adds multiplex_instance_id
-      -> PSYNC carries it across
+      -> PSYNC carries it across, and the check follows it down
 
     Portal boots
       -> ready() repoints EVENNIA_PORTAL_SERVICE_CLASS and PORTAL_SESSION_HANDLER_CLASS
@@ -89,34 +91,40 @@ command-rate limit, `clean_senddata` and a local echo before sending. Replacing 
 directly puts a malformed message on the wire, which surfaces inside the Server's input handling as
 `too many values to unpack` — nowhere near the cause.
 
+## How a Server refuses to start
+
+A Server that announced itself and was not recorded looks exactly like one that was, until something
+tries to reach it. So it asks, and stops if the answer is wrong.
+
+    connectionMade
+      -> super() sends PSYNC, carrying this instance's name
+      -> query_registry(self) asks the Portal what it is holding
+      -> check_registration raises unless this instance is in the answer
+      -> _refuse logs the reason and stops the reactor
+
+**The check runs from `connectionMade`, and it has to.** `PSYNC` and the query go down the same
+connection in order, AMP delivers in order, and the Portal records synchronously — so a "not
+registered" answer cannot mean "not yet", and one check is enough. From a timer or a service hook that
+guarantee is gone and retries would be needed to paper over the race.
+
+**One errback, three causes.** This instance missing from the answer, a Portal that answers
+`UnhandledCommand` because it is not running this library, or a connection that dropped mid-question.
+All three mean the Server cannot confirm anybody can reach it; the log line says which.
+
+**Stopping the reactor, not raising.** A raise out of `connectionMade` is logged by Twisted and the
+reactor carries on, leaving a Server running unreachable. Stopping brings the services down in order,
+so the log line reaches disk — and the log is the only place the reason exists, because twistd has
+daemonised by then and has no terminal. The launcher reports the *fact* separately: `server_start`
+waits, checks the pidfile, and says so if the Server is not there.
+
+`AMP_CLIENT_PROTOCOL_CLASS` is what makes the override reachable, and it only works because
+`evennia_patch` restored it — `AMPClientFactory` resolves it and then ignores it.
+
 ## What is built and not wired
 
-Three pieces are complete and tested with nothing calling them. This is deliberate: each was built
-before the wiring that invokes it.
+One piece is complete and tested with nothing calling it:
 
 - **`move_session`** — no trigger. Nothing can ask for a move.
-- **`check_registration`** — no caller, and no place to call it from yet. See below.
-- **`evennia_patch.install()`** — not called from `ready()`, and
-  `AMP_CLIENT_PROTOCOL_CLASS` is not repointed at anything.
-
-## The open seam
-
-The startup check has to run **on the Server's AMP connection, immediately after the handshake**. That
-ordering is not a nicety: it is what makes a single check trustworthy. `PSYNC` and the query go down
-the same connection in order, AMP delivers in order, and the Portal records synchronously — so a "not
-registered" answer cannot mean "not yet". From a timer or a service hook that guarantee is gone, the
-race is real, and retries would be needed to paper over it.
-
-The natural hook is the AMP client protocol's `connectionMade`, which is what sends the handshake. The
-setting for it, `AMP_CLIENT_PROTOCOL_CLASS`, is resolved by `AMPClientFactory` and then **ignored** —
-`buildProtocol` names the class directly. `evennia_patch` restores it.
-
-So the chain is four links and only the first is built:
-
-1. `evennia_patch.install()` — built, not called
-2. `AMP_CLIENT_PROTOCOL_CLASS` repointed at a protocol class of ours — not done
-3. That protocol subclass, overriding `connectionMade` — **does not exist**
-4. `check_registration` called after the handshake — not wired
 
 ## Not designed yet
 

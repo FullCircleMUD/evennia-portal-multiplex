@@ -13,19 +13,18 @@ Instructions for Claude (and other LLM agents) working in this repository.
 player's session from one server to another on command — without the session being dropped or changed,
 whatever protocol it is using. Tagline: **"One portal, many servers, one session."**
 
-The mechanism is built and unit-tested. **It has never been run against live instances**, and three
-pieces are complete with nothing calling them. Read [docs/architecture.md](docs/architecture.md)
-before touching anything — particularly its *built and not wired*, *open seam* and *not designed yet*
-sections, which is where the loose ends are.
+The mechanism is built and unit-tested. **It has never been run against live instances.** Read
+[docs/architecture.md](docs/architecture.md) before touching anything — particularly its *built and
+not wired* and *not designed yet* sections, which is where the loose ends are.
 
 For the big-picture overview, read [README.md](README.md).
 For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 67 tests, linter clean. Nothing has been booted. `move_session`,
-`check_registration` and `evennia_patch.install()` are all written, tested and uncalled. See
-[docs/progress.md](docs/progress.md).
+**Built, unproven.** 78 tests, linter clean. Nothing has been booted. A Server registers with its
+Portal, checks that it landed, and refuses to start if it did not. `move_session` is written, tested
+and has no trigger. See [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
@@ -129,6 +128,7 @@ evennia-portal-multiplex/
 │       ├── registry.py              # instance id -> live AMP connection
 │       ├── services.py              # the Server and Portal service overrides
 │       ├── amp.py                   # the Portal's AMP protocol
+│       ├── amp_client.py            # the Server's AMP protocol, and the startup check's call site
 │       ├── routing.py               # pointing one send at one instance
 │       ├── binding.py               # which instance a session belongs to
 │       ├── move.py                  # the three-step move

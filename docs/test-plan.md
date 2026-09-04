@@ -251,6 +251,15 @@ construction possible rather than reimplementing it.
 an Evennia upgrade could move it. The alternative is our own copy of the twistd invocation, which goes
 stale silently the first time Evennia changes theirs; a borrowed private helper at least breaks loudly.
 
+**A Server that does not come up is said so at the terminal.** The Server refuses to start when it is
+not registered (ST), and twistd has daemonised by then — no stdout, and the launcher has already
+returned to the prompt. So the operator types a command, nothing happens, and the only trail is a log
+file they have no reason to suspect. Saying "it did not start, read the log" is the whole requirement;
+carrying the reason across process boundaries is not.
+
+**The signal is the pidfile, not the exit code.** twistd forks and the process we spawned exits 0
+almost immediately, whatever became of the Server. Its status says nothing.
+
 | ID | Case | Test function |
 |---|---|---|
 | LC-01 | `server_start` runs the Server command Evennia's own launcher would build, rather than one assembled here | test_lc_01_runs_the_command_evennia_would_build |
@@ -258,6 +267,7 @@ stale silently the first time Evennia changes theirs; a borrowed private helper 
 | LC-03 | The process is started with the launcher's environment, so the gamedir and settings reach the child | test_lc_03_runs_it_with_the_launchers_environment |
 | LC-04 | Nothing is sent to a Portal — no instruction is issued, so an attached Server is not stopped | test_lc_04_sends_nothing_to_a_portal |
 | LC-05 | The callable is importable at the dotted path a consumer names in `EXTRA_LAUNCHER_COMMANDS` | test_lc_05_resolves_at_the_configured_dotted_path |
+| LC-06 | A Server that did not come up is reported at the terminal, pointing at the log, and success is not claimed | test_lc_06_a_server_that_did_not_come_up_is_reported |
 
 
 ## Open decisions
@@ -287,6 +297,16 @@ between tests.
 not a wrong order that fails loudly; it is an `AttributeError` on a factory that is not there, and a
 Portal that runs perfectly while recording nothing.
 
+**Four settings, one mechanism.** `AMP_CLIENT_PROTOCOL_CLASS` is layered the same way as the other
+three, and it is the setting that gives the startup check somewhere to run — see CP. It only reaches
+anything because `evennia_patch` restored it first, which is why the install goes above the layering.
+
+**The Evennia patch is installed from here too.** It is not a class setting, so it does not go through
+the same mechanism — Evennia's Server service looks `amp_client.AMPClientFactory` up by name at call
+time, and `install()` rebinds it. `ready()` is still the right place: it runs before any service is
+built, in both processes. The Portal never constructs an AMP *client* factory, so the install costs it
+a class object and nothing else.
+
 **`data_in` is wrapped, never replaced.** Evennia's applies a character limit, a command-rate limit,
 `clean_senddata` and a local echo before sending. Replacing it and sending directly puts a malformed
 message on the wire, which surfaces inside the Server's input handling as `too many values to unpack` —
@@ -303,6 +323,8 @@ nowhere near the cause.
 | IN-07 | `ready()` stashes the class each setting named before repointing it | test_in_07_ready_stashes_and_repoints_each_setting |
 | IN-08 | Each generated class subclasses whatever the consumer had configured | test_in_08_each_class_subclasses_what_the_consumer_had |
 | IN-09 | The Portal service, the AMP protocol and the session handler share one registry | test_in_09_all_three_share_one_registry |
+| IN-10 | `ready()` installs the Evennia patch, so the factory Evennia constructs reads `AMP_CLIENT_PROTOCOL_CLASS` | test_in_10_ready_installs_the_evennia_patch |
+| IN-11 | `ready()` layers the client protocol over `AMP_CLIENT_PROTOCOL_CLASS`, so the startup check has a call site | test_in_11_ready_layers_over_the_client_protocol |
 
 ### QY — asking the Portal which instances are attached
 
@@ -390,13 +412,8 @@ Retries can be added if experience says otherwise. They are not being built on a
 distinguishable — the Portal unreachable, with the address named, or the Portal answering without this
 instance in its list.
 
-`[TBD — needs discussion: where in Server startup this runs. It has to be on the same AMP connection
-and immediately after the handshake — that ordering is what makes a single check trustworthy, and a
-check from a timer or a service hook would reintroduce the race and with it the need for retries. The
-natural hook is the AMP client's `connectionMade`, which is what sends the handshake, but
-`AMP_CLIENT_PROTOCOL_CLASS` is resolved by `AMPClientFactory` and then ignored — `buildProtocol`
-hard-codes the class. It resolves the name from its own module globals at call time, so replacing that
-module attribute would reach it, and that is worth confirming before it is relied on.]`
+**It runs from the AMP client's `connectionMade`** — the method that sends the handshake, so the query
+follows it down the same connection. See CP for that call site and what it does with a failure.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -407,8 +424,52 @@ module attribute would reach it, and that is worth confirming before it is relie
 
 **ST-01 is retired.** It covered a retry the design no longer has. The ID is not reused.
 
-ST-05 waits on the seam. It is the errback path — the address it names comes from the connection,
-which is the part that is not yet decided. ST-02 to ST-04 are the answered path and need none of it.
+ST-05 is the unreachable-Portal path, and the address it would name comes from the connection. CP-06
+covers the log line the errback writes; ST-05 is the finer question of naming the address tried.
+
+### CP — the Server's AMP client protocol
+
+The seam ST describes. `check_registration` decides what an unregistered instance does; this is the
+one place it can be called from and have that decision mean anything.
+
+**It has to be `connectionMade`.** That is the method that sends the handshake, so a query issued from
+it goes down the same connection, immediately after, and AMP delivers in order. Every other candidate —
+a timer, a service hook, an `at_server_start` — loses that guarantee and with it the single check: the
+answer could then mean "not yet", and the design would need the retries it deliberately does not have.
+
+**`super()` first, always.** Evennia's `connectionMade` is what sends `PSYNC`. Query before it and the
+Portal has not been told who this is, so the answer is "not registered" every time and every Server
+refuses to start.
+
+**The subclass is reached through `AMP_CLIENT_PROTOCOL_CLASS`**, the documented way, layered over
+whatever the setting already named — Evennia's default, or a consumer's own protocol class. That
+setting only works because `evennia_patch` restored it; see PT.
+
+**The Deferred is the branch, not an `if`.** `check_registration` returns nothing when all is well and
+raises when it is not, so the errback is reached by exactly the failures worth refusing on — this
+instance missing from the answer, a Portal that does not speak the query, a connection that dropped
+mid-question. All three mean the same thing: this Server cannot confirm anybody can reach it.
+
+**Log everything known, then stop the reactor.** Raising inside `connectionMade` is not a refusal —
+Twisted logs the traceback and the reactor carries on, leaving a Server running unreachable. Stopping
+the reactor is the graceful version: services come down in order and the log line reaches disk, which
+matters because the log is the only place the reason exists. The launcher reports the *fact* of the
+failure at the terminal (LC-06); this is where the *reason* is written down.
+
+**The cause is named where it can be told apart.** A Portal that answers `UnhandledCommand` is not
+running this library, which is a different fix from an instance whose announcement did not land. Both
+refuse; they do not read the same in the log.
+
+| ID | Case | Test function |
+|---|---|---|
+| CP-01 | `connectionMade` calls `super()` before querying, so the handshake is sent first | test_cp_01_the_handshake_is_sent_before_the_query |
+| CP-02 | The query goes down this connection, the one the handshake went down | test_cp_02_the_query_goes_down_this_connection |
+| CP-03 | The Portal's answer is handed to `check_registration` | test_cp_03_the_answer_is_handed_to_the_check |
+| CP-04 | The generated class subclasses whatever the setting named | test_cp_04_subclasses_whatever_the_setting_named |
+| CP-05 | A failure stops the reactor, so the Server does not go on running unreachable | test_cp_05_a_failure_stops_the_reactor |
+| CP-06 | The failure is logged with its reason before the shutdown | test_cp_06_the_reason_is_logged_before_the_shutdown |
+| CP-07 | A Portal that does not speak the query is logged as not running this library | test_cp_07_a_portal_without_the_library_is_named_as_that |
+| CP-08 | A successful check stops nothing | test_cp_08_a_successful_check_stops_nothing |
 
 ### PT — a local patch for an Evennia bug
 

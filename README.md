@@ -16,9 +16,10 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, unproven.** The mechanism is built and unit-tested — 67 tests — and **has never been run
-against live instances.** Three pieces are complete with nothing calling them yet: moving a session,
-the startup registration check, and a patch for an Evennia bug the check depends on.
+**Working, unproven.** The mechanism is built and unit-tested — 78 tests — and **has never been run
+against live instances.** A Server registers with its Portal on connect, checks that it landed, and
+refuses to start if it did not. Moving a session is built but has no trigger: nothing can ask for one
+yet.
 
 Not usable yet. See [docs/progress.md](docs/progress.md) for what exists and
 [docs/architecture.md](docs/architecture.md) for what does not.

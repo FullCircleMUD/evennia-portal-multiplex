@@ -23,6 +23,44 @@ See docs/test-plan.md § LC.
 """
 
 
+#: How long to let a Server settle before deciding it did not come up. It has
+#: to cover a full boot *and* a refusal, because the refusal happens once the
+#: Server is up enough to have dialled its Portal — see docs/test-plan.md § ST.
+#: A guess until this has been run against live instances; too short reports a
+#: healthy Server as failed, which is worse than saying nothing.
+SETTLE_SECONDS = 10
+
+
+def _server_came_up():
+    """Whether this gamedir's Server is running, once it has had time to settle.
+
+    **The pidfile, not the spawned process's exit code.** twistd forks and the
+    process we started exits 0 almost immediately, whatever became of the
+    Server. Its status says nothing about what we want to know.
+
+    The pid is checked as well as read: twistd removes its pidfile on a clean
+    shutdown, so a Server that refused leaves none — but one that was killed
+    leaves a stale file, and reporting that as running is the false success
+    this whole check exists to avoid.
+    """
+    import os
+    import time
+
+    from evennia.server import evennia_launcher
+
+    time.sleep(SETTLE_SECONDS)
+
+    pid = evennia_launcher.get_pid(evennia_launcher.SERVER_PIDFILE)
+    if not pid:
+        return False
+    try:
+        # Signal 0 asks the question without sending anything.
+        os.kill(int(pid), 0)
+    except (ProcessLookupError, ValueError):
+        return False
+    return True
+
+
 def server_start(*args):
     """Start this gamedir's Server, without touching any Portal.
 
@@ -54,4 +92,18 @@ def server_start(*args):
     portal_multiplex_log(f"server_start: {' '.join(server_cmd)}")
     print(f"Starting Server only (no Portal): {' '.join(server_cmd)}")
     subprocess.Popen(server_cmd, env=evennia_launcher.getenv())
+
+    # Checked rather than assumed. A Server that refuses to start does it after
+    # twistd has daemonised, so it has no terminal to say so on and this
+    # process has nothing to report unless it looks.
+    if not _server_came_up():
+        failed = (
+            "The Server did not start. Read server/logs/server.log for why — "
+            "an instance that is not registered with its Portal refuses to "
+            "start, and says so there."
+        )
+        portal_multiplex_log(failed, level="ERROR")
+        print(failed)
+        return
+
     print("Server started. It attaches to the Portal named by AMP_HOST/AMP_PORT.")

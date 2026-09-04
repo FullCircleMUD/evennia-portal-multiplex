@@ -2,6 +2,22 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — a Server refuses to start when it is not registered
+
+78 tests, linter clean. The startup check now has a call site and a consequence, which closes the last
+of the pieces built with nothing calling them apart from the move itself.
+
+- **The Server's AMP client protocol** — `connectionMade` sends the handshake, asks the Portal what it
+  recorded, and hands the answer to `check_registration`. One errback covers the three ways this can
+  fail; a Portal that does not speak the query is named as not running this library.
+- **Stopping, not raising** — a raise out of `connectionMade` is logged by Twisted and the reactor
+  carries on. `reactor.stop()` brings the services down in order, so the reason reaches the log.
+- **`AMP_CLIENT_PROTOCOL_CLASS` is layered like the other three**, and `evennia_patch.install()` runs
+  from `ready()` ahead of it — unpatched, Evennia resolves that setting and ignores it.
+- **`server_start` checks that the Server came up** and says so at the terminal when it did not,
+  pointing at the log. twistd has daemonised by the time a Server refuses, so without this the
+  operator gets silence.
+
 ## 2026-09-04 — the mechanism, built and tested
 
 67 tests, linter clean, one uncovered case. Everything below is unit-tested against fakes; **none of

@@ -12,9 +12,11 @@ import unittest
 from unittest import mock
 
 from evennia.server.portal import amp as amp_module
+from evennia.utils.utils import class_from_module
 from twisted.internet import defer
 
 from evennia_portal_multiplex.amp import make_amp_protocol, record_announcement
+from evennia_portal_multiplex.amp_client import make_amp_client_protocol
 from evennia_portal_multiplex.binding import bind, connection_for, instance_for
 from evennia_portal_multiplex.launcher import server_start
 from evennia_portal_multiplex.query import (
@@ -174,10 +176,16 @@ class TestLauncherCommands(unittest.TestCase):
         return fake
 
     def _run(self, launcher):
-        """Call server_start with the launcher and subprocess both faked."""
+        """Call server_start with the launcher and subprocess both faked.
+
+        `_server_came_up` is stubbed to the happy answer: it sleeps for real,
+        and these cases are about what was launched, not what became of it.
+        """
         with mock.patch.dict(
             "sys.modules", {"evennia.server.evennia_launcher": launcher}
-        ), mock.patch("subprocess.Popen") as popen:
+        ), mock.patch("subprocess.Popen") as popen, mock.patch(
+            "evennia_portal_multiplex.launcher._server_came_up", return_value=True
+        ):
             server_start()
         return popen
 
@@ -213,6 +221,36 @@ class TestLauncherCommands(unittest.TestCase):
         launcher = self._launcher()
         self._run(launcher)
         launcher.send_instruction.assert_not_called()
+
+    def test_lc_06_a_server_that_did_not_come_up_is_reported(self):
+        """LC-06: the operator types a command and nothing happens otherwise.
+
+        twistd has daemonised by the time the Server refuses to start, so it
+        has no stdout and the launcher has already returned to the prompt. The
+        bar is saying something, not diagnosing: the reason is in the log, and
+        the terminal's job is to send the reader there.
+
+        Claiming success is the worse half of this. A message that says
+        "Server started" when it did not is what makes the operator go looking
+        somewhere else.
+        """
+        import contextlib
+        import io
+
+        launcher = self._launcher()
+        printed = io.StringIO()
+        with mock.patch.dict(
+            "sys.modules", {"evennia.server.evennia_launcher": launcher}
+        ), mock.patch("subprocess.Popen"), mock.patch(
+            "evennia_portal_multiplex.launcher._server_came_up",
+            return_value=False,
+        ), contextlib.redirect_stdout(printed):
+            server_start()
+
+        output = printed.getvalue().lower()
+        self.assertIn("did not start", output)
+        self.assertIn("log", output)
+        self.assertNotIn("server started", output)
 
     def test_lc_05_resolves_at_the_configured_dotted_path(self):
         """LC-05: resolved the way `run_custom_commands` resolves it.
@@ -908,6 +946,80 @@ class TestInstallation(unittest.TestCase):
         self.assertIsInstance(portal_registry, InstanceRegistry)
         self.assertIs(portal_registry, handler_registry)
 
+    def test_in_11_ready_layers_over_the_client_protocol(self):
+        """IN-11: without this the startup check has nowhere to run.
+
+        The same mechanism as the other three, and the one that depends on
+        IN-10 having run first — the setting reaches nothing on an unpatched
+        Evennia.
+        """
+        from django.apps import apps as django_apps
+        from django.test import override_settings
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        evennias_own = "evennia.server.amp_client.AMPServerClientProtocol"
+        with override_settings(AMP_CLIENT_PROTOCOL_CLASS=evennias_own):
+            config.ready()
+            self.assertEqual(
+                settings.AMP_CLIENT_PROTOCOL_CLASS,
+                "evennia_portal_multiplex.amp_client."
+                "MultiplexAMPClientProtocol",
+            )
+            self.assertEqual(
+                settings._MULTIPLEX_ORIGINAL_AMP_CLIENT_PROTOCOL, evennias_own
+            )
+            # The dotted path has to resolve to a real class: Evennia looks it
+            # up by string, and a placeholder still holding None is an
+            # unhelpful TypeError inside buildProtocol.
+            from evennia_portal_multiplex import amp_client
+
+            self.assertTrue(
+                issubclass(
+                    amp_client.MultiplexAMPClientProtocol,
+                    class_from_module(evennias_own),
+                )
+            )
+
+    def test_in_10_ready_installs_the_evennia_patch(self):
+        """IN-10: without the call, AMP_CLIENT_PROTOCOL_CLASS stays ignored.
+
+        Asserted on the factory's behaviour rather than on the call, because
+        the guarantee is that the class Evennia will construct reads the
+        setting — see PT-01. Checked by source, since the patched class is
+        generated and there is no other stable identity to compare against.
+
+        Restored afterwards: the module attribute is process-wide, and PT-04
+        reads Evennia's own `buildProtocol` off it.
+        """
+        import inspect
+
+        from django.apps import apps as django_apps
+        from django.test import override_settings
+        from evennia.server import amp_client
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        original = amp_client.AMPClientFactory
+        try:
+            with override_settings(
+                EVENNIA_PORTAL_SERVICE_CLASS=(
+                    "evennia.server.portal.service.EvenniaPortalService"
+                ),
+                EVENNIA_SERVER_SERVICE_CLASS=(
+                    "evennia.server.service.EvenniaServerService"
+                ),
+                PORTAL_SESSION_HANDLER_CLASS=(
+                    "evennia.server.portal.portalsessionhandler."
+                    "PortalSessionHandler"
+                ),
+            ):
+                config.ready()
+            source = inspect.getsource(
+                amp_client.AMPClientFactory.buildProtocol
+            )
+            self.assertIn("self.protocol()", source)
+        finally:
+            amp_client.AMPClientFactory = original
+
 
 class TestPortalQuery(unittest.TestCase):
     """QY — asking the Portal which instances are attached."""
@@ -1075,6 +1187,159 @@ class TestStartupCheck(unittest.TestCase):
         self.assertIn("third", message)
 
 
+class TestAmpClientProtocol(unittest.TestCase):
+    """CP — the Server's AMP client protocol."""
+
+    def _base(self, events):
+        """A stand-in for Evennia's AMP client protocol.
+
+        Its `connectionMade` is what sends `PSYNC`, so it records that it ran
+        — CP-01 is about the order, not the content.
+        """
+
+        class FakeClientProtocol:
+            def connectionMade(self):
+                events.append("handshake")
+
+        return FakeClientProtocol
+
+    def _protocol(self, events, attached=("me",)):
+        """A built protocol, with the query and the check stood in for.
+
+        The query returns a Deferred already fired, because what this unit
+        does with the answer is the point and Twisted's reactor is not.
+        """
+        protocol = make_amp_client_protocol(self._base(events))()
+        query = mock.patch(
+            "evennia_portal_multiplex.amp_client.query_registry",
+            side_effect=lambda connection: (
+                events.append("query") or defer.succeed(list(attached))
+            ),
+        )
+        check = mock.patch(
+            "evennia_portal_multiplex.amp_client.check_registration"
+        )
+        return protocol, query, check
+
+    def _failing(self, error):
+        """A built protocol whose check raises `error`, with the reactor faked.
+
+        Returns the protocol, the patched reactor and the patched log, so a
+        case can assert on what was said and on what was stopped.
+        """
+        protocol = make_amp_client_protocol(self._base([]))()
+        return protocol, mock.patch(
+            "evennia_portal_multiplex.amp_client.query_registry",
+            side_effect=lambda connection: defer.succeed(["somebody-else"]),
+        ), mock.patch(
+            "evennia_portal_multiplex.amp_client.check_registration",
+            side_effect=error,
+        ), mock.patch(
+            "evennia_portal_multiplex.amp_client.reactor"
+        ), mock.patch(
+            "evennia_portal_multiplex.amp_client.portal_multiplex_log"
+        )
+
+    def test_cp_05_a_failure_stops_the_reactor(self):
+        """CP-05: raising alone is not a refusal.
+
+        Twisted logs the traceback out of `connectionMade` and the reactor
+        carries on, which leaves a Server running that nobody can reach — the
+        exact state the check exists to prevent.
+        """
+        protocol, query, check, reactor, _log = self._failing(
+            NotRegistered("not in the list")
+        )
+        with query, check, reactor as reactor_mock, _log:
+            protocol.connectionMade()
+        reactor_mock.stop.assert_called_once()
+
+    def test_cp_06_the_reason_is_logged_before_the_shutdown(self):
+        """CP-06: the log is the only place the reason survives.
+
+        The launcher says *that* it failed at the terminal (LC-06); nothing
+        carries *why* across the process boundary, so it has to be on disk
+        before the reactor comes down.
+        """
+        protocol, query, check, reactor, log = self._failing(
+            NotRegistered("'shard1' is not registered with its Portal")
+        )
+        with query, check, reactor, log as logging:
+            protocol.connectionMade()
+        message, kwargs = logging.call_args.args[0], logging.call_args.kwargs
+        self.assertIn("shard1", message)
+        self.assertEqual(kwargs.get("level"), "ERROR")
+
+    def test_cp_07_a_portal_without_the_library_is_named_as_that(self):
+        """CP-07: a different fix from an announcement that did not land.
+
+        Both refuse. Reading the same in the log would send somebody looking
+        at instance ids when the Portal simply is not running this library.
+        """
+        from twisted.protocols.amp import UnhandledCommand
+
+        protocol, query, check, reactor, log = self._failing(
+            UnhandledCommand("MultiplexQueryRegistry")
+        )
+        with query, check, reactor as reactor_mock, log as logging:
+            protocol.connectionMade()
+        self.assertIn(
+            "not running", " ".join(str(a) for a in logging.call_args.args)
+        )
+        reactor_mock.stop.assert_called_once()
+
+    def test_cp_08_a_successful_check_stops_nothing(self):
+        """CP-08: the errback is reached by failures and nothing else."""
+        protocol = make_amp_client_protocol(self._base([]))()
+        with mock.patch(
+            "evennia_portal_multiplex.amp_client.query_registry",
+            side_effect=lambda connection: defer.succeed(["me"]),
+        ), mock.patch(
+            "evennia_portal_multiplex.amp_client.check_registration"
+        ), mock.patch(
+            "evennia_portal_multiplex.amp_client.reactor"
+        ) as reactor_mock:
+            protocol.connectionMade()
+        reactor_mock.stop.assert_not_called()
+
+    def test_cp_01_the_handshake_is_sent_before_the_query(self):
+        """CP-01: query first and the Portal has not been told who this is.
+
+        The answer would be "not registered" every time, and every Server
+        would refuse to start.
+        """
+        events = []
+        protocol, query, check = self._protocol(events)
+        with query, check:
+            protocol.connectionMade()
+        self.assertEqual(events, ["handshake", "query"])
+
+    def test_cp_02_the_query_goes_down_this_connection(self):
+        """CP-02: the same connection the handshake went down.
+
+        A query on any other connection loses the ordering guarantee that
+        makes one check enough — see ST.
+        """
+        events = []
+        protocol, query, check = self._protocol(events)
+        with query as querying, check:
+            protocol.connectionMade()
+        self.assertIs(querying.call_args.args[0], protocol)
+
+    def test_cp_03_the_answer_is_handed_to_the_check(self):
+        """CP-03: querying and not reading the answer checks nothing."""
+        events = []
+        protocol, query, check = self._protocol(events, attached=("me", "you"))
+        with query, check as checking:
+            protocol.connectionMade()
+        self.assertEqual(checking.call_args.args[0], ["me", "you"])
+
+    def test_cp_04_subclasses_whatever_the_setting_named(self):
+        """CP-04: a consumer's own protocol class stays underneath ours."""
+        base = self._base([])
+        self.assertTrue(issubclass(make_amp_client_protocol(base), base))
+
+
 class TestEvenniaPatch(unittest.TestCase):
     """PT — a local patch for an Evennia bug."""
 
@@ -1139,11 +1404,28 @@ class TestEvenniaPatch(unittest.TestCase):
 
         When this goes red, Evennia has been fixed and `evennia_patch` should
         be deleted along with its call in AppConfig.ready().
+
+        **Read Evennia's own class, not whatever is currently bound.**
+        `AppConfig.ready()` runs during `django.setup()` — which the test
+        bootstrap does — so by the time any test runs, `install()` has already
+        rebound `amp_client.AMPClientFactory` to our subclass. Inspecting the
+        module attribute would read *our* `buildProtocol` and report the bug
+        fixed, which is the one wrong answer this test must never give.
+
+        The patched class subclasses whatever was bound, so Evennia's own class
+        is always in the MRO. Finding it by module works patched,
+        double-patched or not patched at all, and a class that moved module
+        raises `StopIteration` rather than quietly matching nothing.
         """
         import inspect
 
-        from evennia.server.amp_client import AMPClientFactory
+        from evennia.server import amp_client
 
-        source = inspect.getsource(AMPClientFactory.buildProtocol)
+        evennias_own = next(
+            klass
+            for klass in amp_client.AMPClientFactory.__mro__
+            if klass.__module__ == "evennia.server.amp_client"
+        )
+        source = inspect.getsource(evennias_own.buildProtocol)
         self.assertIn("AMPServerClientProtocol()", source)
         self.assertNotIn("self.protocol()", source)

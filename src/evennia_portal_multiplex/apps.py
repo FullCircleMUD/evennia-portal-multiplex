@@ -26,8 +26,14 @@ class EvenniaPortalMultiplexConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self):
-        from . import services, sessionhandler
+        from . import amp_client, evennia_patch, services, sessionhandler
         from .registry import InstanceRegistry
+
+        # Not a class setting, so it does not go through _layer_over: Evennia's
+        # Server service looks `amp_client.AMPClientFactory` up by name at call
+        # time, and this rebinds it. **Delete this line when the upstream fix
+        # lands** — see evennia_patch's docstring and PT-04.
+        evennia_patch.install()
 
         # One registry, built here and handed to every factory that needs it.
         # The AMP protocol writes into it, the session handler reads from it,
@@ -50,6 +56,15 @@ class EvenniaPortalMultiplexConfig(AppConfig):
             module=services,
             attribute="MultiplexServerService",
             factory=services.make_server_service,
+        )
+        # Layered after the patch above, which is what makes this setting
+        # reach anything: unpatched, Evennia resolves it and then ignores it.
+        self._layer_over(
+            setting="AMP_CLIENT_PROTOCOL_CLASS",
+            stash="_MULTIPLEX_ORIGINAL_AMP_CLIENT_PROTOCOL",
+            module=amp_client,
+            attribute="MultiplexAMPClientProtocol",
+            factory=amp_client.make_amp_client_protocol,
         )
         self._layer_over(
             setting="PORTAL_SESSION_HANDLER_CLASS",

@@ -1,0 +1,27 @@
+# Everything the demo harness needs, into one venv every instance runs from.
+#
+# Run from this directory — pip resolves the -e path below relative to the
+# working directory, not to this file:
+#
+#     ./venv/bin/pip install -r requirements.txt
+
+evennia
+
+# macOS only. Apple's system SQLite drives sqlite3_initialize() through
+# libdispatch, which does not survive the fork `evennia start` uses to
+# daemonize — the server then deadlocks on its first query, silently, with
+# nothing in any log. sqlean.py ships its own statically-linked SQLite, and
+# the demo settings swap it in, gated on darwin.
+sqlean.py; sys_platform == "darwin"
+
+# The library itself, editable from the checkout above. Not on PyPI, and
+# editable means an edit takes effect in a running instance immediately —
+# no reinstall step between changing the library and testing it.
+#
+# Without this line the package is simply absent: its AppConfig never loads,
+# none of its overrides install, and nothing reports a problem, because
+# Evennia has no way to know it was meant to be there.
+#
+# Evennia is the only other dependency. There are no sibling libraries to
+# install first.
+-e ..

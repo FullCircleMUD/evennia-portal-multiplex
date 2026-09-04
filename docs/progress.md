@@ -2,6 +2,29 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — a Server is handed only its own sessions
+
+118 tests, both linters clean, and verified live.
+
+A Server that attaches sends `PSYNC`, and Evennia answers with every session the Portal holds. With
+three Servers each attaching one was handed the others' players, built a `ServerSession` for each, and
+attached any carrying a `uid` to its own account of that number. The reply is now filtered to the
+sessions bound to the instance that asked.
+
+Carried by `syncing.py`: the responder knows who asked, `get_all_sync_data` builds the payload and
+takes no arguments, and Evennia's own handler sits between them. Same shape as `routing.sending_to`.
+The responder now registers the connection *before* calling `super()`, because the reply is built
+inside it.
+
+**Proven live, and the ordering is what makes the proof.** `test` logged in on server1 at 20:45:01;
+server3 was killed and restarted at 20:46:30, so its handshake happened with `test`'s session live on
+the Portal. server3 came back holding one session — the superuser's, bound to it — and not `test`'s.
+Two earlier attempts at this test proved nothing, both because the instance had attached before the
+second session existed and so had nothing to wrongly adopt.
+
+The same run showed a session surviving its instance being killed and returning to it, which is the
+binding being a name rather than a connection.
+
 ## 2026-09-04 — run live, three instances, one Portal
 
 First run against live instances. Three Servers behind one Portal, and a telnet session moved between

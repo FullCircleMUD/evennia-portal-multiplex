@@ -16,7 +16,10 @@ from evennia.utils.utils import class_from_module
 from twisted.internet import defer
 
 from evennia_portal_multiplex.amp import make_amp_protocol, record_announcement
-from evennia_portal_multiplex.amp_client import make_amp_client_protocol
+from evennia_portal_multiplex.amp_client import (
+    make_amp_client_factory,
+    make_amp_client_protocol,
+)
 from evennia_portal_multiplex.binding import bind, connection_for, instance_for
 from evennia_portal_multiplex.launcher import server_start
 from evennia_portal_multiplex.query import (
@@ -946,6 +949,35 @@ class TestInstallation(unittest.TestCase):
         self.assertIsInstance(portal_registry, InstanceRegistry)
         self.assertIs(portal_registry, handler_registry)
 
+    def test_in_12_ready_layers_over_the_client_factory(self):
+        """IN-12: no setting names this class, so the module is the handle.
+
+        Order is the substance of this case. Layered before the patch, the
+        patch would subclass ours and `buildProtocol` would still be Evennia's
+        broken one — everything would look installed and the client protocol
+        setting would go on being ignored.
+
+        Restored afterwards: the module attribute is process-wide.
+        """
+        import inspect
+
+        from django.apps import apps as django_apps
+        from evennia.server import amp_client as evennias_module
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        original = evennias_module.AMPClientFactory
+        try:
+            config.ready()
+            installed = evennias_module.AMPClientFactory
+            self.assertEqual(installed.__name__, "MultiplexAMPClientFactory")
+            # The patch is underneath, not on top: buildProtocol reads the
+            # setting rather than naming the class.
+            self.assertIn(
+                "self.protocol()", inspect.getsource(installed.buildProtocol)
+            )
+        finally:
+            evennias_module.AMPClientFactory = original
+
     def test_in_11_ready_layers_over_the_client_protocol(self):
         """IN-11: without this the startup check has nowhere to run.
 
@@ -1288,6 +1320,28 @@ class TestAmpClientProtocol(unittest.TestCase):
         )
         reactor_mock.stop.assert_called_once()
 
+    def test_cp_09_the_refusal_exits_non_zero(self):
+        """CP-09: a process manager decides by exit code.
+
+        Zero reads as "stopped cleanly, leave it", which after a reboot is
+        wrong: the instance holding the Portal may simply not be listening
+        yet, and a retry would succeed.
+
+        Registered after shutdown, so it runs once the services are down and
+        the log has flushed — the log is the only place the reason exists.
+        """
+        protocol, query, check, reactor, log = self._failing(
+            NotRegistered("not in the list")
+        )
+        with query, check, reactor as reactor_mock, log:
+            protocol.connectionMade()
+
+        when, event, exiting = reactor_mock.addSystemEventTrigger.call_args.args
+        self.assertEqual((when, event), ("after", "shutdown"))
+        with mock.patch("os._exit") as underlying:
+            exiting()
+        underlying.assert_called_once_with(1)
+
     def test_cp_08_a_successful_check_stops_nothing(self):
         """CP-08: the errback is reached by failures and nothing else."""
         protocol = make_amp_client_protocol(self._base([]))()
@@ -1338,6 +1392,65 @@ class TestAmpClientProtocol(unittest.TestCase):
         """CP-04: a consumer's own protocol class stays underneath ours."""
         base = self._base([])
         self.assertTrue(issubclass(make_amp_client_protocol(base), base))
+
+
+class TestAmpClientFactory(unittest.TestCase):
+    """FC — the Server's AMP client factory."""
+
+    def _base(self, calls):
+        """Evennia's factory, reduced to the method being layered over."""
+
+        class FakeAMPClientFactory:
+            def clientConnectionFailed(self, connector, reason):
+                calls.append((connector, reason))
+
+        return FakeAMPClientFactory
+
+    def _connector(self, host="10.0.1.7", port=4006):
+        """A Twisted connector, which is where the address comes from."""
+        connector = mock.Mock()
+        connector.getDestination.return_value = mock.Mock(host=host, port=port)
+        return connector
+
+    def _fail(self, calls):
+        """Report a failed connection attempt, with the log captured."""
+        factory = make_amp_client_factory(self._base(calls))()
+        with mock.patch(
+            "evennia_portal_multiplex.amp_client.portal_multiplex_log"
+        ) as logging:
+            factory.clientConnectionFailed(self._connector(), "no route to host")
+        return logging
+
+    def test_fc_01_the_address_that_could_not_be_reached_is_logged(self):
+        """FC-01, and ST-05: Evennia's own line names no address.
+
+        With one Server there is only one Portal it could mean. With several
+        instances and a mistyped AMP_HOST, "attempting to reconnect" says
+        nothing about which one is wrong.
+        """
+        logging = self._fail([])
+        message = logging.call_args.args[0]
+        self.assertIn("10.0.1.7", message)
+        self.assertIn("4006", message)
+
+    def test_fc_02_the_retry_still_happens(self):
+        """FC-02: the backoff is Twisted's and is the right behaviour.
+
+        A Portal that is not up yet usually will be shortly. This adds a line
+        to the log and changes nothing else.
+        """
+        calls = []
+        self._fail(calls)
+        self.assertEqual(len(calls), 1)
+
+    def test_fc_03_subclasses_whatever_is_bound(self):
+        """FC-03: not `PatchedAMPClientFactory` by name.
+
+        Naming the patched class would make the patch load-bearing, and it
+        exists to be deleted when Evennia fixes the bug.
+        """
+        base = self._base([])
+        self.assertTrue(issubclass(make_amp_client_factory(base), base))
 
 
 class TestEvenniaPatch(unittest.TestCase):

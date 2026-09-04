@@ -16,7 +16,7 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, unproven.** The mechanism is built and unit-tested — 78 tests — and **has never been run
+**Working, unproven.** The mechanism is built and unit-tested — 83 tests — and **has never been run
 against live instances.** A Server registers with its Portal on connect, checks that it landed, and
 refuses to start if it did not. Moving a session is built but has no trigger: nothing can ask for one
 yet.

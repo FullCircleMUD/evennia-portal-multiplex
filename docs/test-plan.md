@@ -301,6 +301,11 @@ Portal that runs perfectly while recording nothing.
 three, and it is the setting that gives the startup check somewhere to run — see CP. It only reaches
 anything because `evennia_patch` restored it first, which is why the install goes above the layering.
 
+**The client factory is layered the same way the patch is installed**, by rebinding
+`amp_client.AMPClientFactory` — no setting names it. Order matters: it goes on *after* the patch, so
+ours is the leaf and the patched class is underneath. Layered first, the patch would subclass ours and
+`buildProtocol` would still be Evennia's broken one.
+
 **The Evennia patch is installed from here too.** It is not a class setting, so it does not go through
 the same mechanism — Evennia's Server service looks `amp_client.AMPClientFactory` up by name at call
 time, and `install()` rebinds it. `ready()` is still the right place: it runs before any service is
@@ -325,6 +330,7 @@ nowhere near the cause.
 | IN-09 | The Portal service, the AMP protocol and the session handler share one registry | test_in_09_all_three_share_one_registry |
 | IN-10 | `ready()` installs the Evennia patch, so the factory Evennia constructs reads `AMP_CLIENT_PROTOCOL_CLASS` | test_in_10_ready_installs_the_evennia_patch |
 | IN-11 | `ready()` layers the client protocol over `AMP_CLIENT_PROTOCOL_CLASS`, so the startup check has a call site | test_in_11_ready_layers_over_the_client_protocol |
+| IN-12 | `ready()` layers the client factory onto Evennia's module, above the patch rather than below it | test_in_12_ready_layers_over_the_client_factory |
 
 ### QY — asking the Portal which instances are attached
 
@@ -420,12 +426,12 @@ follows it down the same connection. See CP for that call site and what it does 
 | ST-02 | A check that finds this instance missing is logged before it raises | test_st_02_logs_before_it_raises |
 | ST-03 | An instance that is not registered does not finish starting | test_st_03_an_unregistered_instance_does_not_start |
 | ST-04 | The failure names this instance and what the Portal did report, so the line is actionable | test_st_04_the_failure_names_this_instance_and_the_answer |
-| ST-05 | A Portal that could not be reached at all is reported as that, naming the address tried | |
+| ST-05 | A Portal that could not be reached at all is reported as that, naming the address tried | test_fc_01_the_address_that_could_not_be_reached_is_logged |
 
 **ST-01 is retired.** It covered a retry the design no longer has. The ID is not reused.
 
-ST-05 is the unreachable-Portal path, and the address it would name comes from the connection. CP-06
-covers the log line the errback writes; ST-05 is the finer question of naming the address tried.
+ST-05 is answered on the factory, not here — a Portal that was never reached never reaches this
+check. See FC.
 
 ### CP — the Server's AMP client protocol
 
@@ -460,6 +466,15 @@ failure at the terminal (LC-06); this is where the *reason* is written down.
 running this library, which is a different fix from an instance whose announcement did not land. Both
 refuse; they do not read the same in the log.
 
+**The refusal exits non-zero.** Started from a terminal that changes nothing. Started by a process
+manager after a reboot it is the difference between being retried and staying down — and after a
+reboot "not registered" is usually transient, because the instance holding the Portal may not be
+listening yet. A retry succeeds where giving up does not. A real misconfiguration still stops, because
+a process manager's own retry limit gives up after a few attempts.
+
+It goes on an after-shutdown trigger rather than a `sys.exit`, which inside an errback only raises
+`SystemExit` into the Deferred and is swallowed.
+
 | ID | Case | Test function |
 |---|---|---|
 | CP-01 | `connectionMade` calls `super()` before querying, so the handshake is sent first | test_cp_01_the_handshake_is_sent_before_the_query |
@@ -470,6 +485,32 @@ refuse; they do not read the same in the log.
 | CP-06 | The failure is logged with its reason before the shutdown | test_cp_06_the_reason_is_logged_before_the_shutdown |
 | CP-07 | A Portal that does not speak the query is logged as not running this library | test_cp_07_a_portal_without_the_library_is_named_as_that |
 | CP-08 | A successful check stops nothing | test_cp_08_a_successful_check_stops_nothing |
+| CP-09 | The refusal exits non-zero, after the shutdown, so a process manager sees a failure | test_cp_09_the_refusal_exits_non_zero |
+
+### FC — the Server's AMP client factory
+
+A Portal that cannot be reached at all never gets as far as CP. `connectionMade` only runs on a
+connection that formed, so the check, the query and the errback are all off the path. Twisted calls
+`clientConnectionFailed` on the factory instead.
+
+Evennia handles that already — it logs and lets `ReconnectingClientFactory` retry with backoff — but
+its line names no address. With one Server that is enough, because there is only one Portal it could
+mean. With several instances and a mistyped `AMP_HOST`, it says nothing about which one is wrong,
+which is the whole question being asked.
+
+**`super()` still runs.** The retry belongs to Twisted and is the correct behaviour: a Portal that is
+not up yet usually will be shortly. This adds a line to the log and changes nothing else.
+
+**Layered over whatever is bound, not over the patched class by name.** Nothing names this class in
+settings, so a consumer cannot override it and there is no consumer class to preserve. The reason to
+read the current binding is `evennia_patch`: naming `PatchedAMPClientFactory` would make the patch
+load-bearing, and it exists to be deleted.
+
+| ID | Case | Test function |
+|---|---|---|
+| FC-01 | A failed connection is logged with the address that could not be reached | test_fc_01_the_address_that_could_not_be_reached_is_logged |
+| FC-02 | `super()` still runs, so Twisted's reconnect backoff is untouched | test_fc_02_the_retry_still_happens |
+| FC-03 | The generated class subclasses whatever is bound, so the patch stays deletable | test_fc_03_subclasses_whatever_is_bound |
 
 ### PT — a local patch for an Evennia bug
 

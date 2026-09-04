@@ -44,10 +44,38 @@ argument, which is why they test as plain data handling.
 | `move.py` | The three-step move |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
 | `startup.py` | Refusing to start when this instance is not registered |
-| `amp_client.py` | The Server's AMP protocol: runs that check on connect, and shuts down if it fails |
+| `amp_client.py` | The Server's side of the AMP link: runs that check on connect, and names a Portal it could not reach |
 | `launcher.py` | `evennia server_start` — starts a Server without stopping another |
 | `evennia_patch.py` | A local fix for an Evennia bug. Deletable |
 | `apps.py` | The installer. The library's only way into either process |
+
+## A Server booting, step by step
+
+Every step from starting a Server to it being reachable, and who owns each one — **[library]** for
+this library, **[Evennia]** for Evennia or Twisted. No gaps: this part is complete.
+
+- **[Evennia]** `django.setup()` runs during Server boot, which runs every installed app's `ready()`
+- **[library]** `ready()` installs the Evennia patch, layers our AMP client factory on top of it, and
+  repoints four class settings
+- **[Evennia]** `_init()` builds the Server service from `EVENNIA_SERVER_SERVICE_CLASS`
+- **[Evennia]** the AMP client factory dials the Portal, retrying with backoff if it cannot
+- **[library]** a Portal that cannot be reached is logged with its host and port, then Twisted retries
+  as it would have
+- **[library]** `buildProtocol` reads `AMP_CLIENT_PROTOCOL_CLASS` and builds our client protocol —
+  Evennia's own ignores that setting; the patch restores it
+- **[library]** our `connectionMade` runs
+- **[Evennia]** `super().connectionMade()` sends the `PSYNC` handshake
+- **[library]** `get_info_dict()` has added this instance's name to what `PSYNC` carries
+- **[library]** on the Portal, `register_amp()` has already put our recording protocol on the AMP
+  factory
+- **[library]** the Portal's responder reads the name and records the connection in the registry
+- **[library]** the Server asks the Portal what it is holding, down the same connection
+- **[library]** the Portal answers with every instance attached
+- **[library]** `check_registration` returns quietly, or logs and raises
+- **[library]** on failure: log the reason, register a non-zero exit, stop the reactor
+- **[Evennia]** the reactor stops, services come down in order, the log reaches disk
+- **[library]** `server_start` waits, checks the pidfile, and reports at the terminal if the Server is
+  not there
 
 ## How an instance becomes addressable
 
@@ -117,8 +145,21 @@ so the log line reaches disk — and the log is the only place the reason exists
 daemonised by then and has no terminal. The launcher reports the *fact* separately: `server_start`
 waits, checks the pidfile, and says so if the Server is not there.
 
+**The exit is non-zero**, so a process manager retries rather than leaving the Server down. After a
+reboot "not registered" is usually the Portal not listening yet, which a retry fixes; a real
+misconfiguration still gives up, at the process manager's own retry limit.
+
 `AMP_CLIENT_PROTOCOL_CLASS` is what makes the override reachable, and it only works because
 `evennia_patch` restored it — `AMPClientFactory` resolves it and then ignores it.
+
+**A Portal that was never reached is a different path.** `connectionMade` only runs on a connection
+that formed, so none of the above applies: Twisted calls `clientConnectionFailed` on the factory
+instead. Evennia already logs that and retries with backoff, but names no address, which with several
+instances leaves you unable to tell which Portal is wrong. Our factory layer adds the host and port and
+lets the retry proceed — a Portal that is not up yet usually will be shortly.
+
+Both factory layers are installed by rebinding `amp_client.AMPClientFactory`, since no setting names
+it. Ours goes on after the patch, so the chain is ours → patched → Evennia's.
 
 ## What is built and not wired
 

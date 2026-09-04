@@ -22,9 +22,10 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 78 tests, linter clean. Nothing has been booted. A Server registers with its
-Portal, checks that it landed, and refuses to start if it did not. `move_session` is written, tested
-and has no trigger. See [docs/progress.md](docs/progress.md).
+**Built, unproven.** 83 tests, linters clean, no uncovered cases. Nothing has been booted. Booting a
+Server and registering it is complete: it announces itself, confirms the Portal recorded it, and stops
+if it did not. `move_session` is written, tested and has no trigger. See
+[docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
@@ -128,7 +129,7 @@ evennia-portal-multiplex/
 │       ├── registry.py              # instance id -> live AMP connection
 │       ├── services.py              # the Server and Portal service overrides
 │       ├── amp.py                   # the Portal's AMP protocol
-│       ├── amp_client.py            # the Server's AMP protocol, and the startup check's call site
+│       ├── amp_client.py            # the Server's AMP protocol and factory; the startup check's call site
 │       ├── routing.py               # pointing one send at one instance
 │       ├── binding.py               # which instance a session belongs to
 │       ├── move.py                  # the three-step move

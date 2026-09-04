@@ -4,8 +4,10 @@ Running log of milestones with links to evidence. Reverse chronological — newe
 
 ## 2026-09-04 — a Server refuses to start when it is not registered
 
-78 tests, linter clean. The startup check now has a call site and a consequence, which closes the last
-of the pieces built with nothing calling them apart from the move itself.
+83 tests, both linters clean, no uncovered cases. Booting a Server and registering it is complete end
+to end: it announces itself, confirms the Portal recorded it, and stops if it did not — with the reason
+in the log, the fact at the terminal, and a non-zero exit for a process manager. Nothing has been
+booted; this is the unit-tested state.
 
 - **The Server's AMP client protocol** — `connectionMade` sends the handshake, asks the Portal what it
   recorded, and hands the answer to `check_registration`. One errback covers the three ways this can
@@ -14,9 +16,16 @@ of the pieces built with nothing calling them apart from the move itself.
   carries on. `reactor.stop()` brings the services down in order, so the reason reaches the log.
 - **`AMP_CLIENT_PROTOCOL_CLASS` is layered like the other three**, and `evennia_patch.install()` runs
   from `ready()` ahead of it — unpatched, Evennia resolves that setting and ignores it.
+- **A Portal that was never reached is named** — host and port, off the connector, from the factory's
+  `clientConnectionFailed`. That path never reaches `connectionMade`, so none of the check above is on
+  it. Evennia logs the failure already; what it does not say is which Portal, which is the only
+  question worth asking once there are several instances.
 - **`server_start` checks that the Server came up** and says so at the terminal when it did not,
   pointing at the log. twistd has daemonised by the time a Server refuses, so without this the
   operator gets silence.
+- **A non-zero exit**, on an after-shutdown trigger. From a terminal it changes nothing; under a
+  process manager it is the difference between being retried and staying down, and after a reboot the
+  cause is usually just the Portal not listening yet.
 
 ## 2026-09-04 — the mechanism, built and tested
 

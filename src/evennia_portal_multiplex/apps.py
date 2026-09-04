@@ -35,6 +35,16 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         # lands** — see evennia_patch's docstring and PT-04.
         evennia_patch.install()
 
+        # Layered on after the patch, so ours is the leaf and the patched
+        # class is underneath. The other way round, the patch would subclass
+        # ours and `buildProtocol` would still be Evennia's broken one.
+        # Rebound the same way, because no setting names this class either.
+        from evennia.server import amp_client as evennias_amp_client
+
+        evennias_amp_client.AMPClientFactory = amp_client.make_amp_client_factory(
+            evennias_amp_client.AMPClientFactory
+        )
+
         # One registry, built here and handed to every factory that needs it.
         # The AMP protocol writes into it, the session handler reads from it,
         # and the Portal service holds it so there is one obvious owner — all

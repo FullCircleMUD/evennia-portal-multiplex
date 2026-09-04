@@ -107,3 +107,17 @@ MULTIPLEX_DEFAULT_INSTANCE = "server1"
 # two dial. One constant, used three times, because a mismatch means a Server
 # that never attaches and a registry that never hears of it.
 MULTIPLEX_AMP_PORT = 4006
+
+######################################################################
+# The launcher verb that starts a Server without a Portal
+######################################################################
+#
+# Declared for all three even though only server2 and server3 use it: one
+# place to change, and no way for the two that need it to disagree. server1
+# starts normally and never reaches for the verb.
+#
+# Without this, `evennia server_start` does not resolve. It fails silently —
+# the verb falls through to Django and is reported as an unknown command.
+EXTRA_LAUNCHER_COMMANDS = {
+    "server_start": "evennia_portal_multiplex.launcher.server_start",
+}

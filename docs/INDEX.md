@@ -7,7 +7,7 @@ index new ones as they are written.
 
 | Document | What it covers |
 |---|---|
-| [architecture.md](architecture.md) | The three processes the library carries out — booting a Server, a player connecting, moving a session — each as a step list before the prose, plus which module does what and what is not designed yet. **Start here** |
+| [architecture.md](architecture.md) | The four processes the library carries out — booting a Server, a player connecting, moving a session, announcing to everyone — each as a step list before the prose, plus which module does what and what is not designed yet. **Start here** |
 
 ## Process and discipline
 
@@ -20,6 +20,7 @@ index new ones as they are written.
 
 | Document | What it covers |
 |---|---|
+| [installing.md](installing.md) | What a game has to do to run several Servers behind one Portal — settings, the launcher verb, and the two functions a consumer calls |
 | [interoperability.md](interoperability.md) | This library against every sibling library in `libraries/` |
 
 ## Archive

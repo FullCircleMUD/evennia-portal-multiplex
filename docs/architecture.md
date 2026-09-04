@@ -356,3 +356,13 @@ instance.
   door refuses.
 
   `MULTIPLEX_DEFAULT_INSTANCE` stays a single name.
+
+- **Checking the required settings at boot.** `MULTIPLEX_INSTANCE_ID` and `MULTIPLEX_DEFAULT_INSTANCE`
+  both raise when read, but they are read at first use — which on a Portal is when a player connects.
+  So a misconfigured Portal boots clean and fails on the first login. Checking them in `ready()`
+  instead would fail at boot, on the same argument as the registration check: an instance nobody can
+  reach is not started in any useful sense.
+
+  `EXTRA_LAUNCHER_COMMANDS` is not in that set. This library never reads it — Evennia's launcher
+  does — and a deployment that never starts a second Server on a shared Portal legitimately does not
+  need it. It belongs in the installation guide, not in a boot check.

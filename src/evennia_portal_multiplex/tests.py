@@ -23,6 +23,7 @@ from evennia_portal_multiplex.query import (
     query_registry,
 )
 from evennia_portal_multiplex.registry import InstanceRegistry
+from evennia_portal_multiplex.startup import NotRegistered, check_registration
 from evennia_portal_multiplex.routing import sending_to
 from django.conf import settings
 
@@ -1009,3 +1010,65 @@ class TestSelfRegistration(unittest.TestCase):
         with self._me("second"):
             self.assertFalse(am_i_registered(["first", "third"]))
             self.assertFalse(am_i_registered([]))
+
+
+class TestStartupCheck(unittest.TestCase):
+    """ST — the startup check."""
+
+    def _me(self, name):
+        """Patch both lookups.
+
+        `query` resolves this instance's name to answer the check; `startup`
+        resolves it again to name it in the failure. Each imported the name,
+        so each holds its own reference — the same shape as _patch_default.
+        """
+        query_patch = mock.patch(
+            "evennia_portal_multiplex.query.get_instance_id", return_value=name
+        )
+        startup_patch = mock.patch(
+            "evennia_portal_multiplex.startup.get_instance_id", return_value=name
+        )
+
+        class _Both:
+            def __enter__(self):
+                query_patch.start()
+                startup_patch.start()
+                return self
+
+            def __exit__(self, *exc):
+                startup_patch.stop()
+                query_patch.stop()
+                return False
+
+        return _Both()
+
+    def _log(self):
+        return mock.patch("evennia_portal_multiplex.startup.portal_multiplex_log")
+
+    def test_st_02_logs_before_it_raises(self):
+        """ST-02: the exception may be caught; the line stays."""
+        with self._me("second"), self._log() as logged:
+            with self.assertRaises(NotRegistered):
+                check_registration(["first", "third"])
+        self.assertTrue(logged.called)
+
+    def test_st_03_an_unregistered_instance_does_not_start(self):
+        """ST-03: raised, not returned — a Server nobody can reach is not up.
+
+        And it returns quietly when the instance *is* there, so the check is
+        invisible on the ordinary path.
+        """
+        with self._me("second"), self._log():
+            with self.assertRaises(NotRegistered):
+                check_registration(["first"])
+            self.assertIsNone(check_registration(["first", "second"]))
+
+    def test_st_04_the_failure_names_this_instance_and_the_answer(self):
+        """ST-04: enough in the line to act on without reading the code."""
+        with self._me("second"), self._log():
+            with self.assertRaises(NotRegistered) as raised:
+                check_registration(["first", "third"])
+        message = str(raised.exception)
+        self.assertIn("second", message)
+        self.assertIn("first", message)
+        self.assertIn("third", message)

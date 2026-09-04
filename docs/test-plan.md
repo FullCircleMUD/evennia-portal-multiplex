@@ -24,6 +24,7 @@ Behaviour is agreed here first, before any test or code — see
 | `QY` | Asking the Portal about its state |
 | `RT` | Routing one send to one instance |
 | `SR` | An instance checking its own registration |
+| `ST` | The startup check that acts on it |
 | `SB` | Which instance a session belongs to |
 
 ## Fixtures
@@ -354,11 +355,56 @@ that has simply not been asked.
 have to know which setting names an instance. That is most of what this function is for — the check
 itself is one containment test.
 
-`[TBD — needs discussion: what an instance should do when it finds it is not registered. Retry, log
-and continue, or refuse to finish starting. Nothing calls this yet, and that decision belongs with
-whatever does.]`
+What an instance *does* with the answer is a separate unit — see ST. This is the read, and nothing
+else: three lines and one containment test.
 
 | ID | Case | Test function |
 |---|---|---|
 | SR-01 | True when this instance's name is in the answer | test_sr_01_true_when_this_instance_is_in_the_answer |
 | SR-02 | False when it is not | test_sr_02_false_when_it_is_not |
+
+### ST — the startup check
+
+`am_i_registered` answers whether. This decides what to do about it, and it is where the retry lives —
+not in the read, which stays a yes/no.
+
+**An instance that finds itself unregistered does not start.** One check, no retries, and the failure
+raised rather than logged and shrugged off. A Server nobody can reach is not started in any useful
+sense, and failing at boot beats running unreachable while somebody works out why players never
+arrive.
+
+**There are no retries because there is no window one would close.** The two failures are already
+covered:
+
+- **The connection is down** — then there is nothing to query, and `AMPClientFactory` is a Twisted
+  `ReconnectingClientFactory` that is already redialling with backoff. A retry of ours would be a
+  worse copy of something running anyway.
+- **The connection is up and this instance is not in the list** — the handshake went down that same
+  connection before the query, AMP delivers in order, and the Portal records synchronously. So the
+  answer cannot mean "not yet". It means something is broken, and asking again will not change it.
+
+Retries can be added if experience says otherwise. They are not being built on a guess.
+
+**Each failure line says which kind it was**, because the two mean different things and are cheaply
+distinguishable — the Portal unreachable, with the address named, or the Portal answering without this
+instance in its list.
+
+`[TBD — needs discussion: where in Server startup this runs. It has to be on the same AMP connection
+and immediately after the handshake — that ordering is what makes a single check trustworthy, and a
+check from a timer or a service hook would reintroduce the race and with it the need for retries. The
+natural hook is the AMP client's `connectionMade`, which is what sends the handshake, but
+`AMP_CLIENT_PROTOCOL_CLASS` is resolved by `AMPClientFactory` and then ignored — `buildProtocol`
+hard-codes the class. It resolves the name from its own module globals at call time, so replacing that
+module attribute would reach it, and that is worth confirming before it is relied on.]`
+
+| ID | Case | Test function |
+|---|---|---|
+| ST-02 | A check that finds this instance missing is logged before it raises | test_st_02_logs_before_it_raises |
+| ST-03 | An instance that is not registered does not finish starting | test_st_03_an_unregistered_instance_does_not_start |
+| ST-04 | The failure names this instance and what the Portal did report, so the line is actionable | test_st_04_the_failure_names_this_instance_and_the_answer |
+| ST-05 | A Portal that could not be reached at all is reported as that, naming the address tried | |
+
+**ST-01 is retired.** It covered a retry the design no longer has. The ID is not reused.
+
+ST-05 waits on the seam. It is the errback path — the address it names comes from the connection,
+which is the part that is not yet decided. ST-02 to ST-04 are the answered path and need none of it.

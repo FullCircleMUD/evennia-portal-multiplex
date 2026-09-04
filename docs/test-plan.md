@@ -17,6 +17,7 @@ Behaviour is agreed here first, before any test or code — see
 |---|---|
 | `AR` | The AMP responder that records an announcement |
 | `IA` | An instance announcing its name to the Portal |
+| `IN` | Installing the machinery into a running Evennia |
 | `IR` | The instance registry — which AMP connection belongs to which instance |
 | `LC` | Launcher commands the library adds to `evennia` |
 | `MV` | Moving a session between instances |
@@ -259,3 +260,42 @@ stale silently the first time Evennia changes theirs; a borrowed private helper 
 
 Open questions land here as `[TBD — needs discussion: …]` against the specific case they block,
 collected in this section. A case with open behaviour is still listed, but it does not pass.
+
+### IN — installation
+
+What makes any of the preceding sections run. Nothing above this imports anything else in the library:
+the registry is passed in, the routing is a context manager, the move takes a registry and a session.
+This is where they are joined and handed to Evennia.
+
+**A library's only way into the Portal process is `AppConfig.ready()`.** There is no plugin registry it
+can join — `PORTAL_SERVICES_PLUGIN_MODULES` names a gamedir module, so a consumer would have to wire it
+themselves. `ready()` runs during `django.setup()`, and Evennia resolves these class settings later in
+`_init()`, so repointing them there is early enough and nothing needs patching at runtime.
+
+**One registry, created in `ready()` and passed to all three.** The Portal service holds it, the AMP
+protocol writes into it, the session handler reads from it — and they must be the same object. A
+service that built its own would be recorded into while the handler consulted an empty one, so every
+session would route to the default forever and nothing would fail. Every factory that needs the
+registry takes it as an argument for exactly that reason. Module state would also work, and would leak
+between tests.
+
+**`register_amp` calls `super()` first.** The factory does not exist until it has. Patching before is
+not a wrong order that fails loudly; it is an `AttributeError` on a factory that is not there, and a
+Portal that runs perfectly while recording nothing.
+
+**`data_in` is wrapped, never replaced.** Evennia's applies a character limit, a command-rate limit,
+`clean_senddata` and a local echo before sending. Replacing it and sending directly puts a malformed
+message on the wire, which surfaces inside the Server's input handling as `too many values to unpack` —
+nowhere near the cause.
+
+| ID | Case | Test function |
+|---|---|---|
+| IN-01 | The Portal service holds the registry it was given, for the life of the process | test_in_01_the_portal_service_holds_the_registry_it_was_given |
+| IN-02 | `register_amp` puts the recording protocol class on the AMP factory | test_in_02_register_amp_puts_our_protocol_on_the_factory |
+| IN-03 | `register_amp` calls `super()` before touching the factory, which does not exist until then | test_in_03_register_amp_calls_super_first |
+| IN-04 | The session handler sends a session's input to the instance it is bound to | test_in_04_input_goes_to_the_instance_the_session_is_bound_to |
+| IN-05 | The session handler calls `super()`, so Evennia's own preprocessing still runs | test_in_05_the_handler_calls_the_base |
+| IN-06 | An unbound session's input goes to the default instance | test_in_06_an_unbound_session_goes_to_the_default |
+| IN-07 | `ready()` stashes the class each setting named before repointing it | test_in_07_ready_stashes_and_repoints_each_setting |
+| IN-08 | Each generated class subclasses whatever the consumer had configured | test_in_08_each_class_subclasses_what_the_consumer_had |
+| IN-09 | The Portal service, the AMP protocol and the session handler share one registry | test_in_09_all_three_share_one_registry |

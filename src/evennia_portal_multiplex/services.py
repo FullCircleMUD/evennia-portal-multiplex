@@ -20,9 +20,10 @@ from .config import get_instance_id
 #: Prefixed because the dict is Evennia's and a consumer may add to it too.
 INSTANCE_KEY = "multiplex_instance_id"
 
-#: Set by `AppConfig.ready()` to the generated class, so the dotted path in
-#: EVENNIA_SERVER_SERVICE_CLASS resolves. Evennia looks the setting up by string.
-ScalingServerService = None
+#: Set by `AppConfig.ready()` to the generated classes, so the dotted paths in
+#: the settings resolve. Evennia looks each one up by string.
+MultiplexServerService = None
+MultiplexPortalService = None
 
 
 def make_server_service(base):
@@ -33,7 +34,7 @@ def make_server_service(base):
     stashed class, and a test passes its own.
     """
 
-    class ScalingServerService(base):
+    class MultiplexServerService(base):
         """Announces this instance's name on the handshake it already sends."""
 
         def get_info_dict(self):
@@ -60,4 +61,49 @@ def make_server_service(base):
             info[INSTANCE_KEY] = get_instance_id()
             return info
 
-    return ScalingServerService
+    return MultiplexServerService
+
+
+def make_portal_service(base, registry):
+    """Build the Portal service class, subclassing whatever the consumer had.
+
+    ``registry`` is passed in rather than created here, and it is the same
+    object the session handler and the AMP protocol are given. A service that
+    built its own would be recorded into while the handler consulted an empty
+    one — every session routing to the default forever, with nothing raised.
+    """
+
+    class MultiplexPortalService(base):
+        """Owns the registry, and puts the recording protocol on the factory."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Held so there is one obvious owner, but not created here — see
+            # the factory's docstring.
+            self.registry = registry
+
+        def register_amp(self):
+            """Let Evennia build the AMP service, then record through it.
+
+            super() first: the factory does not exist until it has run.
+            Reaching for it earlier is an AttributeError on something absent,
+            which — caught — leaves a Portal that runs perfectly and records
+            nothing.
+
+            `factory.protocol` rather than a `buildProtocol` wrapper.
+            buildProtocol calls `self.protocol()`, so the assignment is
+            enough; the wrapper was only ever needed while the responder
+            table was broken, and it is the only live-object patch this
+            design would otherwise have.
+            """
+            # Imported here, not at module scope: `amp` reads INSTANCE_KEY
+            # from this module, so importing it at the top makes a cycle. The
+            # constant is cheap and the factory is not, so the factory is the
+            # one that waits — and register_amp runs once, at startup.
+            from .amp import make_amp_protocol
+
+            super().register_amp()
+            factory = self.getServiceNamed("PortalAMPServer").args[1]
+            factory.protocol = make_amp_protocol(factory.protocol, self.registry)
+
+    return MultiplexPortalService

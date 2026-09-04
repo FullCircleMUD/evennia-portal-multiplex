@@ -16,7 +16,14 @@ from evennia_portal_multiplex.binding import bind, connection_for, instance_for
 from evennia_portal_multiplex.launcher import server_start
 from evennia_portal_multiplex.registry import InstanceRegistry
 from evennia_portal_multiplex.routing import sending_to
-from evennia_portal_multiplex.services import INSTANCE_KEY, make_server_service
+from django.conf import settings
+
+from evennia_portal_multiplex.services import (
+    INSTANCE_KEY,
+    make_portal_service,
+    make_server_service,
+)
+from evennia_portal_multiplex.sessionhandler import make_session_handler
 from evennia_portal_multiplex.move import NotAttached, move_session
 
 
@@ -669,3 +676,224 @@ class TestMovingASession(unittest.TestCase):
         session = self._session()
         self._move(registry, session, "second")
         self.assertEqual(session.transport_calls, [])
+
+
+class TestInstallation(unittest.TestCase):
+    """IN — installation."""
+
+    DEFAULT = "first"
+
+    # -- Portal service -------------------------------------------------
+
+    def _portal_base(self):
+        """A stand-in for Evennia's Portal service.
+
+        `register_amp` is what creates the AMP service, exactly as Evennia's
+        does — so an override that touches the factory before calling super()
+        finds nothing there (IN-03).
+        """
+
+        class FakePortalService:
+            def __init__(self, *args, **kwargs):
+                self.services = {}
+                self.register_amp_calls = 0
+
+            def register_amp(self):
+                self.register_amp_calls += 1
+                factory = mock.Mock()
+
+                class EvenniasOwnProtocol:
+                    pass
+
+                factory.protocol = EvenniasOwnProtocol
+                service = mock.Mock()
+                service.args = (4006, factory)
+                self.services["PortalAMPServer"] = service
+
+            def getServiceNamed(self, name):
+                return self.services[name]
+
+        return FakePortalService
+
+    def test_in_01_the_portal_service_holds_the_registry_it_was_given(self):
+        """IN-01: not one of its own — see IN-09."""
+        registry = InstanceRegistry()
+        service = make_portal_service(self._portal_base(), registry)()
+        self.assertIs(service.registry, registry)
+
+    def test_in_02_register_amp_puts_our_protocol_on_the_factory(self):
+        """IN-02: without this the Portal records nothing, silently."""
+        service = make_portal_service(self._portal_base(), InstanceRegistry())()
+        service.register_amp()
+        factory = service.getServiceNamed("PortalAMPServer").args[1]
+        self.assertEqual(factory.protocol.__name__, "MultiplexAMPServerProtocol")
+        # Layered over whatever Evennia was going to build, not replacing it.
+        self.assertEqual(
+            factory.protocol.__mro__[1].__name__, "EvenniasOwnProtocol"
+        )
+
+    def test_in_03_register_amp_calls_super_first(self):
+        """IN-03: the factory does not exist until Evennia's has run.
+
+        Touching it earlier is an AttributeError on something absent, caught
+        and shrugged off — leaving a Portal that runs and records nothing.
+        """
+        service = make_portal_service(self._portal_base(), InstanceRegistry())()
+        service.register_amp()
+        self.assertEqual(service.register_amp_calls, 1)
+
+    # -- Session handler ------------------------------------------------
+
+    def _handler_base(self):
+        """A stand-in for PortalSessionHandler, recording where a send landed."""
+
+        class FakeSessionHandler:
+            def __init__(self, factory):
+                self.factory = factory
+                self.sent = []
+
+            def data_in(self, session, **kwargs):
+                # Evennia's reads factory.server_connection at this moment.
+                self.sent.append((session, self.factory.server_connection))
+
+        return FakeSessionHandler
+
+    def _handler_world(self):
+        factory = mock.Mock()
+        factory.server_connection = "evennias-global-choice"
+        registry = InstanceRegistry()
+        default, second = mock.Mock(name="default"), mock.Mock(name="second")
+        for connection in (default, second):
+            connection.factory = factory
+        registry.register(self.DEFAULT, default)
+        registry.register("second", second)
+        handler = make_session_handler(self._handler_base(), registry)(factory)
+        return handler, default, second
+
+    def _session(self):
+        class FakeSession:
+            pass
+
+        return FakeSession()
+
+    def test_in_04_input_goes_to_the_instance_the_session_is_bound_to(self):
+        """IN-04: what the player types follows the binding."""
+        handler, _default, second = self._handler_world()
+        session = self._session()
+        bind(session, "second")
+        with _patch_default(self.DEFAULT):
+            handler.data_in(session, text="look")
+        self.assertEqual(handler.sent[0][1], second)
+
+    def test_in_05_the_handler_calls_the_base(self):
+        """IN-05: replacing it skips clean_senddata and malforms the message."""
+        handler, _default, _second = self._handler_world()
+        session = self._session()
+        with _patch_default(self.DEFAULT):
+            handler.data_in(session, text="look")
+        self.assertEqual(handler.sent[0][0], session)
+
+    def test_in_06_an_unbound_session_goes_to_the_default(self):
+        """IN-06: not to whichever Server attached most recently."""
+        handler, default, _second = self._handler_world()
+        with _patch_default(self.DEFAULT):
+            handler.data_in(self._session(), text="look")
+        self.assertEqual(handler.sent[0][1], default)
+
+    # -- AppConfig ------------------------------------------------------
+
+    def test_in_07_ready_stashes_and_repoints_each_setting(self):
+        """IN-07: Evennia resolves these later, by string, in _init()."""
+        from django.apps import apps as django_apps
+        from django.test import override_settings
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        # Evennia's own defaults, which is what a consumer has unless they
+        # have layered something of their own. They must be importable: the
+        # installer resolves each one to build on top of it.
+        portal_class = "evennia.server.portal.service.EvenniaPortalService"
+        server_class = "evennia.server.service.EvenniaServerService"
+        handler_class = (
+            "evennia.server.portal.portalsessionhandler.PortalSessionHandler"
+        )
+        with override_settings(
+            EVENNIA_PORTAL_SERVICE_CLASS=portal_class,
+            EVENNIA_SERVER_SERVICE_CLASS=server_class,
+            PORTAL_SESSION_HANDLER_CLASS=handler_class,
+        ):
+            config.ready()
+            self.assertEqual(
+                settings.EVENNIA_PORTAL_SERVICE_CLASS,
+                "evennia_portal_multiplex.services.MultiplexPortalService",
+            )
+            self.assertEqual(
+                settings.EVENNIA_SERVER_SERVICE_CLASS,
+                "evennia_portal_multiplex.services.MultiplexServerService",
+            )
+            self.assertEqual(
+                settings.PORTAL_SESSION_HANDLER_CLASS,
+                "evennia_portal_multiplex.sessionhandler."
+                "MultiplexPortalSessionHandler",
+            )
+            # Stashed, so a consumer's own class is not simply lost.
+            self.assertEqual(
+                settings._MULTIPLEX_ORIGINAL_PORTAL_SERVICE, portal_class
+            )
+            self.assertEqual(
+                settings._MULTIPLEX_ORIGINAL_SERVER_SERVICE, server_class
+            )
+            self.assertEqual(
+                settings._MULTIPLEX_ORIGINAL_SESSION_HANDLER, handler_class
+            )
+
+    def test_in_08_each_class_subclasses_what_the_consumer_had(self):
+        """IN-08: a consumer's own class stays underneath ours."""
+        portal_base = self._portal_base()
+        handler_base = self._handler_base()
+        self.assertTrue(
+            issubclass(
+                make_portal_service(portal_base, InstanceRegistry()), portal_base
+            )
+        )
+        self.assertTrue(
+            issubclass(make_session_handler(handler_base, InstanceRegistry()),
+                       handler_base)
+        )
+
+    def test_in_09_all_three_share_one_registry(self):
+        """IN-09: one object, passed to every factory that needs it.
+
+        Two registries is not a visible failure. The AMP protocol records into
+        the service's while the handler consults its own empty one, so every
+        session routes to the default forever and nothing raises.
+
+        Asserted at the installer, because that is where the guarantee lives —
+        the handler's copy is a closure and not reachable from the class.
+        """
+        from django.apps import apps as django_apps
+        from django.test import override_settings
+
+        from evennia_portal_multiplex import services, sessionhandler
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        with override_settings(
+            EVENNIA_PORTAL_SERVICE_CLASS=(
+                "evennia.server.portal.service.EvenniaPortalService"
+            ),
+            EVENNIA_SERVER_SERVICE_CLASS=(
+                "evennia.server.service.EvenniaServerService"
+            ),
+            PORTAL_SESSION_HANDLER_CLASS=(
+                "evennia.server.portal.portalsessionhandler.PortalSessionHandler"
+            ),
+        ), mock.patch.object(
+            services, "make_portal_service"
+        ) as portal_factory, mock.patch.object(
+            sessionhandler, "make_session_handler"
+        ) as handler_factory:
+            config.ready()
+
+        portal_registry = portal_factory.call_args.args[1]
+        handler_registry = handler_factory.call_args.args[1]
+        self.assertIsInstance(portal_registry, InstanceRegistry)
+        self.assertIs(portal_registry, handler_registry)

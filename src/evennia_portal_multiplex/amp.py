@@ -45,7 +45,7 @@ def make_amp_protocol(base, registry):
 
     from evennia.server.portal import amp as evennia_amp
 
-    class ScalingAMPServerProtocol(base):
+    class MultiplexAMPServerProtocol(base):
         """Records an instance against its connection, and forgets it on loss."""
 
         @evennia_amp.AdminServer2Portal.responder
@@ -73,4 +73,4 @@ def make_amp_protocol(base, registry):
             registry.forget(self)
             return super().connectionLost(reason)
 
-    return ScalingAMPServerProtocol
+    return MultiplexAMPServerProtocol

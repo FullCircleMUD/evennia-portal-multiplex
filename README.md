@@ -4,15 +4,33 @@ Run several [Evennia](https://www.evennia.com/) servers behind a single portal, 
 session from one server to another on command — without the session being dropped or changed, whatever
 protocol it is using.
 
+## Why
+
+Evennia runs one Portal holding every player's socket, and one Server running the game. That is a
+sound split — it is why a telnet session survives `evennia reload` — but it assumes exactly one
+Server. Everything the Portal sends goes to whichever Server attached most recently.
+
+If you want several Servers, on one machine or several, this makes each one addressable and lets a
+session be handed between them. The player's socket never moves: only the Server it is fed to changes.
+Nothing is dropped, nothing renegotiates, and it works the same whatever protocol the player is on.
+
 ## Status
 
-**Scaffold.** The repository structure, test infrastructure and logging shim are in place. There is no
-library code and no public surface yet, and nothing about the design has been agreed beyond the
-description above. See [docs/progress.md](docs/progress.md) for the milestone log.
+**Working, unproven.** The mechanism is built and unit-tested — 67 tests — and **has never been run
+against live instances.** Three pieces are complete with nothing calling them yet: moving a session,
+the startup registration check, and a patch for an Evennia bug the check depends on.
+
+Not usable yet. See [docs/progress.md](docs/progress.md) for what exists and
+[docs/architecture.md](docs/architecture.md) for what does not.
 
 ## Is this for me?
 
-Not yet — there is nothing to install. This section gets written once the surface exists.
+Not yet, unless you are working on it. When it is finished, it is for an Evennia game that wants more
+than one Server — to spread load, to run parts of a world separately, or to move a player between
+processes without dropping them.
+
+It has no opinion about *why* you are moving someone. Rooms, characters, what makes a move legal at
+this moment: all yours. This moves a session between Servers and nothing else.
 
 ## Install
 
@@ -30,6 +48,7 @@ python runtests.py
 
 ## Learn more
 
+- **[docs/architecture.md](docs/architecture.md)** — how it works and what is unfinished. Start here.
 - **[docs/INDEX.md](docs/INDEX.md)** — index of design documents.
 - **[docs/test-plan.md](docs/test-plan.md)** — every behaviour the library commits to, and the test
   covering it.

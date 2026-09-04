@@ -13,27 +13,29 @@ Instructions for Claude (and other LLM agents) working in this repository.
 player's session from one server to another on command — without the session being dropped or changed,
 whatever protocol it is using. Tagline: **"One portal, many servers, one session."**
 
-That description is the whole of what has been agreed. **Nothing about the mechanism is decided** — not
-how a server is registered, not what the command looks like, not how the redirect is carried over AMP,
-not what state moves with the session or whether any does. Do not infer any of it from the library's
-name, from the sibling libraries, or from how Evennia happens to work today. It is decided in
-conversation, recorded in `docs/`, and only then built.
+The mechanism is built and unit-tested. **It has never been run against live instances**, and three
+pieces are complete with nothing calling them. Read [docs/architecture.md](docs/architecture.md)
+before touching anything — particularly its *built and not wired*, *open seam* and *not designed yet*
+sections, which is where the loose ends are.
 
 For the big-picture overview, read [README.md](README.md).
 For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Scaffold.** Structure, test infrastructure and the logging shim only — no library code and no public
-surface. See [docs/progress.md](docs/progress.md).
+**Built, unproven.** 67 tests, linter clean. Nothing has been booted. `move_session`,
+`check_registration` and `evennia_patch.install()` are all written, tested and uncalled. See
+[docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
-1. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
-   starts here**, not in the code. Currently empty.
-2. [README.md](README.md) — what the library is and its status.
-3. [docs/INDEX.md](docs/INDEX.md) — map of all design docs.
-4. [docs/interoperability.md](docs/interoperability.md) — this library against its siblings. Sections
+1. [docs/architecture.md](docs/architecture.md) — how it fits together, and what is unfinished.
+   **Start here.**
+2. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
+   starts here**, not in the code.
+3. [README.md](README.md) — what the library is and its status.
+4. [docs/INDEX.md](docs/INDEX.md) — map of all design docs.
+5. [docs/interoperability.md](docs/interoperability.md) — this library against its siblings. Sections
    are present and unwritten.
 
 ## Load-bearing architectural principles
@@ -49,12 +51,28 @@ surface. See [docs/progress.md](docs/progress.md).
    code. See [test-first-process.md](../../design/test-first-process.md) for the process and the
    rationale.
 
-Library-specific principles land here as they are agreed. There are none yet.
+4. **Evennia's seams, not patches over it.** Everything installs by repointing a class setting that
+   Evennia resolves later, so nothing wraps a live object at runtime. The one exception is
+   `evennia_patch`, which exists solely because Evennia resolves `AMP_CLIENT_PROTOCOL_CLASS` and then
+   ignores it — and it *restores* that setting rather than routing around it, so deleting it on a
+   fixed Evennia changes no behaviour.
+
+5. **The decision is split from the plumbing.** Registry, routing, binding and the move are plain
+   functions taking what they need as arguments. The AMP responders and service overrides that call
+   them are three lines each. That is what makes the logic testable without a running Portal, and it
+   is worth keeping.
 
 ## Out of scope
 
-`[TBD — needs discussion: nothing has been ruled out. Scope is decided as concrete questions arise,
-by applying the principles above, and the rulings are recorded here.]`
+- **Tickets and re-authentication.** A session moved this way never leaves the Portal, so there is no
+  untrusted hop to authenticate across. Building ticket auth here would drag in a message bus and then
+  an archive behind it, and would solve a problem this transport does not have. It stays with the
+  consumer.
+- **Why a session should move.** Rooms, characters, what makes a move legal at this moment: the
+  consumer's. This library moves a session and has no opinion about the reason.
+- **Anything needing a third dependency.** Evennia and the standard library, nothing else. If this
+  library ever grows another dependency, that is the signal the boundary has moved and worth stopping
+  to look at.
 
 ## Working conventions
 
@@ -95,8 +113,10 @@ evennia-portal-multiplex/
 ├── pyproject.toml
 ├── runtests.py                      # standalone test runner; no gamedir required
 ├── .gitignore
+├── examples/                        # three demo gamedirs. Never started
 ├── docs/                            # design wiki (humans + LLMs)
 │   ├── INDEX.md
+│   ├── architecture.md
 │   ├── progress.md
 │   ├── test-plan.md
 │   ├── interoperability.md
@@ -104,6 +124,18 @@ evennia-portal-multiplex/
 ├── src/
 │   └── evennia_portal_multiplex/    # library code (src layout)
 │       ├── __init__.py
+│       ├── apps.py                 # AppConfig — the only way into either process
+│       ├── config.py                # the two settings this library reads
+│       ├── registry.py              # instance id -> live AMP connection
+│       ├── services.py              # the Server and Portal service overrides
+│       ├── amp.py                   # the Portal's AMP protocol
+│       ├── routing.py               # pointing one send at one instance
+│       ├── binding.py               # which instance a session belongs to
+│       ├── move.py                  # the three-step move
+│       ├── query.py                 # MultiplexQueryRegistry
+│       ├── startup.py               # refusing to start when unregistered
+│       ├── launcher.py              # `evennia server_start`
+│       ├── evennia_patch.py         # a local fix for an Evennia bug. Deletable
 │       ├── log.py                   # shim onto Evennia's logger → portalmultiplex.log
 │       └── tests.py                 # unit tests, run via runtests.py
 └── tests/                           # standalone test infrastructure
@@ -112,11 +144,11 @@ evennia-portal-multiplex/
     └── urls.py
 ```
 
-No `examples/` yet (no demo gamedirs), and no `contrib/` (nothing opt-in exists; the standards forbid
-scaffolding one empty). No `config.py` or `db_router.py` — the library reads no settings and owns no
-tables yet. When it reads its first setting it gets a `config.py` accessor rather than a direct
-`settings.` read, and if it ever owns tables they go on an alias of its own behind its own router; see
-[library-standards.md](../../design/library-standards.md).
+`examples/` holds three demo gamedirs — `server1` runs the Portal, `server2` and `server3` symlink its
+source and run Servers only. All four settings files live in `server1/server/conf/` and cascade
+through `settings_common.py`. **Never started.**
+
+No `contrib/` and no `db_router.py` — nothing opt-in exists and the library owns no tables.
 
 ## Tools and environment
 

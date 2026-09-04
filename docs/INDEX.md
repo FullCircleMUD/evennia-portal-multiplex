@@ -5,7 +5,9 @@ index new ones as they are written.
 
 ## Design
 
-No design documents yet. The library is a scaffold; documents land here as decisions are made.
+| Document | What it covers |
+|---|---|
+| [architecture.md](architecture.md) | How the library is put together, which module does what, what is built but not wired, and what is not designed yet. **Start here** |
 
 ## Process and discipline
 

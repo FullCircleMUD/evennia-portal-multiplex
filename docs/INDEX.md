@@ -7,7 +7,7 @@ index new ones as they are written.
 
 | Document | What it covers |
 |---|---|
-| [architecture.md](architecture.md) | How the library is put together, which module does what, what is built but not wired, and what is not designed yet. **Start here** |
+| [architecture.md](architecture.md) | The three processes the library carries out — booting a Server, a player connecting, moving a session — each as a step list before the prose, plus which module does what and what is not designed yet. **Start here** |
 
 ## Process and discipline
 

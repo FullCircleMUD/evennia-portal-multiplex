@@ -803,9 +803,21 @@ class TestInstallation(unittest.TestCase):
                 self.factory = factory
                 self.sent = []
 
-            def data_in(self, session, **kwargs):
+            def _record(self, what, session):
                 # Evennia's reads factory.server_connection at this moment.
-                self.sent.append((session, self.factory.server_connection))
+                self.sent.append((session, self.factory.server_connection, what))
+
+            def data_in(self, session, **kwargs):
+                self._record("data_in", session)
+
+            def connect(self, session):
+                self._record("connect", session)
+
+            def sync(self, session):
+                self._record("sync", session)
+
+            def disconnect(self, session):
+                self._record("disconnect", session)
 
         return FakeSessionHandler
 
@@ -850,6 +862,41 @@ class TestInstallation(unittest.TestCase):
         with _patch_default(self.DEFAULT):
             handler.data_in(self._session(), text="look")
         self.assertEqual(handler.sent[0][1], default)
+
+    def test_in_13_a_new_session_is_announced_where_its_input_goes(self):
+        """IN-13: announce and input have to agree.
+
+        Unrouted, the announce went to whichever Server spoke to the Portal
+        most recently, while everything typed went to the default. The session
+        is then created on one Server and spoken to on another, which has
+        never heard of it — a login screen, then nothing works.
+        """
+        handler, default, _second = self._handler_world()
+        with _patch_default(self.DEFAULT):
+            handler.connect(self._session())
+        self.assertEqual(handler.sent[0][1], default)
+
+    def test_in_14_sync_follows_the_same_connection(self):
+        """IN-14: telnet negotiates after connecting, and calls this.
+
+        Terminal type, width and compression settle once the session already
+        exists, and the Server holding it is the one that needs them.
+        """
+        handler, _default, second = self._handler_world()
+        session = self._session()
+        bind(session, "second")
+        with _patch_default(self.DEFAULT):
+            handler.sync(session)
+        self.assertEqual(handler.sent[0][1], second)
+
+    def test_in_15_disconnect_tells_the_instance_holding_it(self):
+        """IN-15: not the last Server to speak, which never had the session."""
+        handler, _default, second = self._handler_world()
+        session = self._session()
+        bind(session, "second")
+        with _patch_default(self.DEFAULT):
+            handler.disconnect(session)
+        self.assertEqual(handler.sent[0][1], second)
 
     # -- AppConfig ------------------------------------------------------
 

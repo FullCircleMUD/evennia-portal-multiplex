@@ -317,6 +317,17 @@ a class object and nothing else.
 message on the wire, which surfaces inside the Server's input handling as `too many values to unpack` —
 nowhere near the cause.
 
+**Every message about a session follows the same rule.** `data_in` routes what a player types;
+`connect`, `sync` and `disconnect` are the other three things the Portal says about a session, and
+they were going to whichever Server spoke to the Portal most recently. Announce and input then
+disagree: the session is created on one Server while everything typed goes to another, which has never
+heard of it. The player sees a login screen and then nothing they type does anything. All four now
+resolve through `connection_for`, so they cannot disagree by construction.
+
+`connect` routes on the session it was handed, while Evennia's own may announce a *different* one off
+its connection queue. Both are unbound at that point and so resolve to the same default; a session is
+only ever bound later, by a move.
+
 | ID | Case | Test function |
 |---|---|---|
 | IN-01 | The Portal service holds the registry it was given, for the life of the process | test_in_01_the_portal_service_holds_the_registry_it_was_given |
@@ -331,6 +342,9 @@ nowhere near the cause.
 | IN-10 | `ready()` installs the Evennia patch, so the factory Evennia constructs reads `AMP_CLIENT_PROTOCOL_CLASS` | test_in_10_ready_installs_the_evennia_patch |
 | IN-11 | `ready()` layers the client protocol over `AMP_CLIENT_PROTOCOL_CLASS`, so the startup check has a call site | test_in_11_ready_layers_over_the_client_protocol |
 | IN-12 | `ready()` layers the client factory onto Evennia's module, above the patch rather than below it | test_in_12_ready_layers_over_the_client_factory |
+| IN-13 | `connect` announces a new session down the connection its input will use | test_in_13_a_new_session_is_announced_where_its_input_goes |
+| IN-14 | `sync` follows the same connection, so a telnet client's negotiated flags reach the Server holding the session | test_in_14_sync_follows_the_same_connection |
+| IN-15 | `disconnect` tells the instance actually holding the session | test_in_15_disconnect_tells_the_instance_holding_it |
 
 ### QY — asking the Portal which instances are attached
 

@@ -2,6 +2,20 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — a session lands where its input goes
+
+86 tests. `connect`, `sync` and `disconnect` now route the same way `data_in` already did, so all four
+things the Portal says about a session resolve through `connection_for` and cannot pick different
+Servers.
+
+Unrouted, they went to whichever Server had last spoken to the Portal while everything typed went to
+the default: the session was created on one Server and spoken to on another that had never heard of
+it — a login screen, and then nothing the player typed doing anything. Whether it bit depended on AMP
+timing at boot.
+
+That completes a player connecting, apart from broadcasts: `disconnect_all` and `announce_all` still
+reach one Server.
+
 ## 2026-09-04 — a Server refuses to start when it is not registered
 
 83 tests, both linters clean, no uncovered cases. Booting a Server and registering it is complete end

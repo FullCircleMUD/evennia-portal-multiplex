@@ -22,15 +22,15 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 83 tests, linters clean, no uncovered cases. Nothing has been booted. Booting a
-Server and registering it is complete: it announces itself, confirms the Portal recorded it, and stops
-if it did not. `move_session` is written, tested and has no trigger. See
+**Built, unproven.** 86 tests, linters clean, no uncovered cases. Nothing has been booted. Two of the
+three processes are complete: a Server boots and registers or refuses to start, and a player connects
+and lands on the default instance. The third — moving a session — is built and has no trigger. See
 [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
-1. [docs/architecture.md](docs/architecture.md) — how it fits together, and what is unfinished.
-   **Start here.**
+1. [docs/architecture.md](docs/architecture.md) — the three processes the library carries out, each as
+   a step list before the prose, and what is unfinished. **Start here.**
 2. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
    starts here**, not in the code.
 3. [README.md](README.md) — what the library is and its status.

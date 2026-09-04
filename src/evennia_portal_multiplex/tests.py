@@ -37,6 +37,7 @@ from evennia_portal_multiplex.evennia_patch import install, make_patched_factory
 from evennia_portal_multiplex.registry import InstanceRegistry
 from evennia_portal_multiplex.startup import NotRegistered, check_registration
 from evennia_portal_multiplex.routing import sending_to
+from evennia_portal_multiplex.syncing import currently_syncing, syncing_for
 from django.conf import settings
 
 from evennia_portal_multiplex.services import (
@@ -677,13 +678,25 @@ class TestAmpResponder(unittest.TestCase):
             def __init__(self):
                 self.admin_calls = []
                 self.lost = []
+                # What was true at the moment Evennia's handler ran — which
+                # is where the PSYNC reply is built, so it is the moment that
+                # matters (AR-09, AR-10).
+                self.seen_syncing = []
+                self.seen_registered = []
 
             def data_in(self, packed_data):
                 return packed_data
 
             def portal_receive_adminserver2portal(self, packed_data):
                 self.admin_calls.append(packed_data)
+                self.seen_syncing.append(currently_syncing())
+                self.seen_registered.append(self.registry_at_call())
                 return "evennias-return-value"
+
+            def registry_at_call(self):
+                # Filled in by _protocol below; the fake has no registry of
+                # its own.
+                return None
 
             def connectionLost(self, reason):
                 self.lost.append(reason)
@@ -691,7 +704,11 @@ class TestAmpResponder(unittest.TestCase):
         return FakeAMPProtocol
 
     def _protocol(self, registry):
-        return make_amp_protocol(self._base(), registry)()
+        protocol = make_amp_protocol(self._base(), registry)()
+        # So the fake can report what the registry held at the moment
+        # Evennia's handler ran, rather than only at the end.
+        protocol.registry_at_call = lambda: list(registry.attached())
+        return protocol
 
     def _message(self, info_dict):
         """What `data_in` hands back: a (sessid, kwargs) pair."""
@@ -728,6 +745,36 @@ class TestAmpResponder(unittest.TestCase):
         result = protocol.portal_receive_adminserver2portal(message)
         self.assertEqual(protocol.admin_calls, [message])
         self.assertEqual(result, "evennias-return-value")
+
+    def test_ar_09_registers_before_evennias_handling_runs(self):
+        """AR-09: a PSYNC is the announcement and the request in one message.
+
+        Evennia builds and sends the reply inside its own handler, so a
+        connection registered afterwards is not registered in time to be
+        filtered for.
+        """
+        registry = InstanceRegistry()
+        protocol = self._protocol(registry)
+        protocol.portal_receive_adminserver2portal(
+            self._message({INSTANCE_KEY: "second"})
+        )
+        self.assertEqual(protocol.seen_registered, [["second"]])
+
+    def test_ar_10_names_the_instance_while_evennia_handles_it(self):
+        """AR-10: what SY exists to carry, at the only moment it is read."""
+        protocol = self._protocol(InstanceRegistry())
+        protocol.portal_receive_adminserver2portal(
+            self._message({INSTANCE_KEY: "second"})
+        )
+        self.assertEqual(protocol.seen_syncing, ["second"])
+
+    def test_ar_11_nothing_is_syncing_afterwards(self):
+        """AR-11: left set, every later sync would answer for one instance."""
+        protocol = self._protocol(InstanceRegistry())
+        protocol.portal_receive_adminserver2portal(
+            self._message({INSTANCE_KEY: "second"})
+        )
+        self.assertIsNone(currently_syncing())
 
     def test_ar_05_a_lost_connection_is_forgotten(self):
         """AR-05: an instance that drops stops being reachable."""
@@ -833,6 +880,45 @@ class TestRouting(unittest.TestCase):
         with sending_to(connection):
             self.assertEqual(factory.portal.amp_protocol, "untouched")
         self.assertEqual(factory.portal.amp_protocol, "untouched")
+
+
+class TestSyncTarget(unittest.TestCase):
+    """SY — which instance a sync is for."""
+
+    def test_sy_01_names_the_instance_being_synced(self):
+        """SY-01: the responder knows who asked; the handler does not."""
+        with syncing_for("shard1"):
+            self.assertEqual(currently_syncing(), "shard1")
+
+    def test_sy_02_outside_the_block_nothing_is_syncing(self):
+        """SY-02: the ordinary state, and it has to be distinguishable.
+
+        `get_all_sync_data` has other callers, and they should keep seeing
+        every session — so "nobody is syncing" cannot look like "an instance
+        with no sessions is syncing".
+        """
+        self.assertIsNone(currently_syncing())
+        with syncing_for("shard1"):
+            pass
+        self.assertIsNone(currently_syncing())
+
+    def test_sy_03_cleared_even_when_the_block_raises(self):
+        """SY-03: left set, every later sync would answer for one instance."""
+        with self.assertRaises(ValueError):
+            with syncing_for("shard1"):
+                raise ValueError("the reply failed")
+        self.assertIsNone(currently_syncing())
+
+    def test_sy_04_restores_what_was_there_before(self):
+        """SY-04: restored, not cleared.
+
+        Nothing nests these today. Restoring rather than clearing costs one
+        line and means the first thing that does is not silently wrong.
+        """
+        with syncing_for("shard1"):
+            with syncing_for("shard2"):
+                self.assertEqual(currently_syncing(), "shard2")
+            self.assertEqual(currently_syncing(), "shard1")
 
 
 class TestSessionBinding(unittest.TestCase):
@@ -1243,10 +1329,20 @@ class TestInstallation(unittest.TestCase):
     def _handler_base(self):
         """A stand-in for PortalSessionHandler, recording where a send landed."""
 
-        class FakeSessionHandler:
+        class FakeSessionHandler(dict):
+            # A dict, as Evennia's handlers are: sessid -> session, which is
+            # what `get_all_sync_data` walks.
+
             def __init__(self, factory):
+                super().__init__()
                 self.factory = factory
                 self.sent = []
+
+            def get_all_sync_data(self):
+                return {
+                    sessid: session.get_sync_data()
+                    for sessid, session in self.items()
+                }
 
             def _record(self, what, session):
                 # Evennia's reads factory.server_connection at this moment.
@@ -1285,7 +1381,10 @@ class TestInstallation(unittest.TestCase):
 
     def _session(self):
         class FakeSession:
-            pass
+            sessid = 0
+
+            def get_sync_data(self):
+                return {"sessid": self.sessid}
 
         return FakeSession()
 
@@ -1347,6 +1446,53 @@ class TestInstallation(unittest.TestCase):
         with _patch_default(self.DEFAULT):
             handler.disconnect(session)
         self.assertEqual(handler.sent[0][1], second)
+
+    def _syncing_world(self):
+        """A handler holding three sessions: two bound, one not."""
+        handler, _default, _second = self._handler_world()
+        handler.update(
+            {
+                1: self._bound_session(1, "second"),
+                2: self._bound_session(2, "second"),
+                3: self._session(),
+            }
+        )
+        return handler
+
+    def _bound_session(self, sessid, instance_id):
+        session = self._session()
+        session.sessid = sessid
+        bind(session, instance_id)
+        return session
+
+    def test_in_18_a_sync_carries_only_that_instances_sessions(self):
+        """IN-18: Evennia hands an attaching Server everything it holds.
+
+        Under several instances that Server then builds a session for each and
+        attaches any carrying a uid to its own account of that number — the
+        MV-03 hazard, by a path the move never touches.
+        """
+        handler = self._syncing_world()
+        with _patch_default(self.DEFAULT), syncing_for("second"):
+            self.assertEqual(sorted(handler.get_all_sync_data()), [1, 2])
+
+    def test_in_19_an_unbound_session_syncs_to_the_default(self):
+        """IN-19: the same answer `connect` and `data_in` route on."""
+        handler = self._syncing_world()
+        with _patch_default(self.DEFAULT), syncing_for(self.DEFAULT):
+            self.assertEqual(sorted(handler.get_all_sync_data()), [3])
+
+    def test_in_20_outside_a_sync_everything_is_returned(self):
+        """IN-20: the method has other callers, and they see every session."""
+        handler = self._syncing_world()
+        with _patch_default(self.DEFAULT):
+            self.assertEqual(sorted(handler.get_all_sync_data()), [1, 2, 3])
+
+    def test_in_21_an_instance_with_no_sessions_gets_nothing(self):
+        """IN-21: distinguishable from nobody syncing, which gets everything."""
+        handler = self._syncing_world()
+        with _patch_default(self.DEFAULT), syncing_for("third"):
+            self.assertEqual(handler.get_all_sync_data(), {})
 
     def test_in_16_disconnect_all_reaches_every_instance(self):
         """IN-16: a Portal shutting down speaks to every Server it has.

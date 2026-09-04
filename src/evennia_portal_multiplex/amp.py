@@ -27,22 +27,31 @@ from .move import (
 )
 from .query import MultiplexQueryRegistry
 from .services import INSTANCE_KEY
+from .syncing import syncing_for
+
+
+def announced_instance(message):
+    """The instance an admin message named, or ``None``.
+
+    One place decides what counts as absent. Most admin messages carry no
+    ``info_dict`` at all, and an `info_dict` without our key is the same
+    answer.
+    """
+    _sessid, kwargs = message
+    return (kwargs.get("info_dict") or {}).get(INSTANCE_KEY)
 
 
 def record_announcement(registry, connection, message):
     """Register ``connection`` if this admin message named an instance.
 
     Split out of the responder because it is plain data handling and testable
-    as such, while the responder itself is awkward to reach. Most admin
-    messages carry no ``info_dict`` at all.
+    as such, while the responder itself is awkward to reach.
 
     No guard against an absent name: `InstanceRegistry.register` already
     ignores one (IR-03), and a second check here would be a second place to
     disagree about what counts as absent.
     """
-    _sessid, kwargs = message
-    name = (kwargs.get("info_dict") or {}).get(INSTANCE_KEY)
-    registry.register(name, connection)
+    registry.register(announced_instance(message), connection)
 
 
 def make_amp_protocol(base, registry):
@@ -60,19 +69,28 @@ def make_amp_protocol(base, registry):
         @evennia_amp.AdminServer2Portal.responder
         @evennia_amp.catch_traceback
         def portal_receive_adminserver2portal(self, packed_data):
-            """Let Evennia handle the message, then note who sent it.
+            """Note who sent this, then let Evennia handle it.
 
             The decorators are the point. Without them this method is on the
             instance and never called: Twisted's dispatch table, built when the
             class was created, would still name the base's function.
 
-            `super()` first, so Evennia's own handling — including the
-            operations that mean "the Server that just spoke" — has resolved
-            before anything here looks at the message.
+            **Before `super()`, not after.** A `PSYNC` is the announcement and
+            the request for the Portal's sessions in one message, and Evennia
+            builds and sends that reply inside its own handler. So the
+            connection has to be registered, and the instance named as the one
+            being synced, before the call rather than after it.
+
+            Nothing here depends on what `super()` does: the registration is
+            against `self`, the connection this arrived on, and never consults
+            `factory.server_connection` — the one thing Evennia's handler
+            changes that could have mattered.
             """
-            result = super().portal_receive_adminserver2portal(packed_data)
-            record_announcement(registry, self, self.data_in(packed_data))
-            return result
+            message = self.data_in(packed_data)
+            record_announcement(registry, self, message)
+
+            with syncing_for(announced_instance(message)):
+                return super().portal_receive_adminserver2portal(packed_data)
 
         @MultiplexQueryRegistry.responder
         @evennia_amp.catch_traceback

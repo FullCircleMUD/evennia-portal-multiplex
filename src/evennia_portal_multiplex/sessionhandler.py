@@ -13,6 +13,11 @@ session. All four resolve through `connection_for`, so the announce and the
 input cannot disagree — unrouted, a session was created on one Server while
 everything typed went to another, which had never heard of it.
 
+``get_all_sync_data`` answers the same question from the other end: not "where
+does this session go" but "which sessions belong to the instance asking". It
+filters on the same binding, so a session cannot be handed to one instance on
+a handshake and spoken to on another.
+
 ``data_in`` is wrapped, never replaced. Evennia's own applies a character
 limit, a command-rate limit, ``clean_senddata`` and a local echo before it
 sends; replacing it and sending directly puts a malformed message on the wire,
@@ -22,8 +27,9 @@ unpack`` — nowhere near the cause.
 See docs/test-plan.md § IN.
 """
 
-from .binding import connection_for
+from .binding import connection_for, instance_for
 from .routing import sending_to
+from .syncing import currently_syncing
 
 #: Set by `AppConfig.ready()` to the generated class, so the dotted path in
 #: PORTAL_SESSION_HANDLER_CLASS resolves. Evennia looks the setting up by string.
@@ -85,6 +91,35 @@ def make_session_handler(base, registry):
             """
             with sending_to(connection_for(registry, session)):
                 return super().disconnect(session)
+
+        def get_all_sync_data(self):
+            """The sessions to hand over, filtered to whoever is syncing.
+
+            This builds the payload of a `PSYNC` reply, and Evennia's own
+            answers with every session the Portal holds. Under several
+            instances each attaching Server is then given the others'
+            sessions, builds a `ServerSession` for each, and attaches any
+            carrying a ``uid`` to *its own* account of that number.
+
+            Filtered on the session's binding — the same answer `connect` and
+            `data_in` route on, so a session cannot be synced to one instance
+            and spoken to on another. A session bound to an instance that is
+            not attached syncs to nobody, which is right: it belongs somewhere
+            that is not listening.
+
+            Outside a sync this answers with everything. The method has other
+            callers, and `currently_syncing` returning nothing means "not a
+            `PSYNC` reply", not "an instance holding no sessions".
+            """
+            instance_id = currently_syncing()
+            if instance_id is None:
+                return super().get_all_sync_data()
+
+            return {
+                sessid: session.get_sync_data()
+                for sessid, session in self.items()
+                if instance_for(session) == instance_id
+            }
 
         def disconnect_all(self):
             """Tell every attached instance to drop everything it holds.

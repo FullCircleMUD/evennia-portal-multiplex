@@ -35,8 +35,9 @@ argument, which is why they test as plain data handling.
 | `services.py` | Server side: announces this instance's name. Portal side: owns the registry, installs the recording protocol |
 | `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query, and carries out a move |
 | `routing.py` | Points one send at one instance for the duration of a call |
+| `syncing.py` | Names the instance a `PSYNC` reply is being built for, for the duration of a call |
 | `binding.py` | Which instance a session belongs to, and which connection that resolves to |
-| `sessionhandler.py` | Routes everything the Portal says about a session to the instance holding it |
+| `sessionhandler.py` | Routes everything the Portal says about a session to the instance holding it, and filters what each instance is handed on a handshake |
 | `move.py` | The move, its outcomes, the command that asks for one, and `send_session` |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
 | `announce.py` | `MultiplexAnnounce` and `broadcast_to_all_instances` — reaching every player at once |
@@ -65,6 +66,29 @@ a command-rate limit, `clean_senddata` and a local echo before sending; `connect
 assigns session ids. Replacing one and sending directly puts a malformed message on the wire, which
 surfaces inside the Server's input handling as `too many values to unpack` — nowhere near the cause.
 
+## What this library changes in Evennia
+
+Everything installs by repointing a class setting that Evennia resolves later, so nothing is patched
+at runtime. What those subclasses actually change is small and worth having in one list:
+
+| Method | Evennia's behaviour | Ours |
+|---|---|---|
+| `PortalSessionHandler.connect` | Announces a new session to whichever Server spoke last | Announces it to the instance its input will go to |
+| `.sync` | Same | Same |
+| `.disconnect` | Same | Tells the instance actually holding it |
+| `.data_in` | Sends input to whichever Server spoke last | Sends it to the instance the session is bound to |
+| `.disconnect_all` | One message to one Server | One message to every attached instance, then Evennia's, which also closes the sockets |
+| `.get_all_sync_data` | Every session on the Portal | Only the sessions bound to the instance asking, while a `PSYNC` reply is being built |
+| `AMPServerProtocol.portal_receive_adminserver2portal` | Handles the message | Records who sent it and names them as the instance being synced, then hands to Evennia |
+| `AMPServerClientProtocol.connectionMade` | Sends the handshake | Sends it, then confirms the Portal recorded this instance and stops if not |
+| `AMPClientFactory.clientConnectionFailed` | Logs and retries | Logs the address it could not reach, then retries |
+| `AMPClientFactory.buildProtocol` | Ignores `AMP_CLIENT_PROTOCOL_CLASS` | Reads it, which is what Evennia intended — see `evennia_patch` |
+| `EvenniaPortalService.register_amp` | Builds the AMP factory | Builds it, then puts our protocol on it |
+| `EvenniaServerService.get_info_dict` | Evennia's own info | Adds this instance's name |
+
+Three commands are added rather than changed: `MultiplexQueryRegistry`, `MultiplexMoveSession` and
+`MultiplexAnnounce`.
+
 # Process one — a Server booting and registering
 
 Every step from starting a Server to it being reachable, and who owns each one — **[library]** for
@@ -92,6 +116,31 @@ this library, **[Evennia]** for Evennia or Twisted. No gaps: this process is com
 - **[Evennia]** the reactor stops, services come down in order, the log reaches disk
 - **[library]** `server_start` waits, checks the pidfile, and reports at the terminal if the Server is
   not there
+
+## What a Server is handed when it attaches
+
+A Server that attaches sends `PSYNC` — "I am up, send me what you are holding" — and the Portal
+answers with the sessions it should have. Evennia's own answer is *every* session on the Portal, which
+with one Server is right and with three is not: each attaching Server would build a `ServerSession`
+for the others' players, and any session carrying a `uid` would be attached to that instance's account
+of the same number. The same hazard the move clears identity to avoid, reached by a path the move
+never touches.
+
+So the reply is filtered to the sessions bound to the instance that asked, on the same binding
+`connect` and `data_in` route on. A session cannot be handed to one instance on a handshake and spoken
+to on another.
+
+Which instance asked is known only in the responder — the name arrives in the same message — while the
+payload is built by `get_all_sync_data`, which takes no arguments. `syncing.py` carries the name
+between them for the length of one call, the same shape as `routing.sending_to` and safe for the same
+reason.
+
+That ordering is why the responder registers the connection **before** calling `super()`: Evennia
+builds and sends the reply inside its own handler, so anything that must be true while it is built has
+to be in place before the call.
+
+A session bound to an instance that is not attached syncs to nobody. That is what should happen — it
+belongs somewhere that is not listening.
 
 ## How an instance becomes addressable
 
@@ -342,21 +391,6 @@ instance.
 
 # Not designed yet
 
-- **`PSYNC` hands every session to whichever Server just attached.** The Portal answers a Server's
-  handshake with `get_all_sync_data()` — all of its sessions, regardless of which instance owns them.
-  The attaching Server then builds a `ServerSession` for each, and any that carries a `uid` is
-  attached to *that instance's* account of the same number.
-
-  Two consequences, seen live. Every instance believes it owns every session. And each attach
-  announces `SERVER_RESTART_MSG` to all of them, so players on unrelated instances are told the server
-  restarted whenever any instance starts — which reads as instability that is not happening.
-
-  The identity half is the same hazard MV-03 covers, arriving by a path the move never touches: it
-  looks harmless only because two demo databases number their superuser identically.
-
-  Nothing here has been touched yet. The Portal's side of `PSYNC` is `amp.py`'s territory and already
-  has the registry to filter by.
-
 - **A move announces a disconnect to the players left behind.** The origin receives `PDISCONN` and
   tells everyone still on that instance that the mover disconnected. The mover sees nothing.
 
@@ -366,6 +400,10 @@ instance.
 
 - **A player who moves sees `SERVER_RESTART_MSG`; a player moved by somebody else does not.** Both
   observed live, on the same destination, through the same mechanism. Unexplained.
+
+  Filtering the handshake reply should have removed the other half of this — players on unrelated
+  instances being told the server restarted whenever any instance attaches, since a Server now
+  announces it only to sessions that are actually its own. Not confirmed live.
 
 - **A new session arriving while the default instance is down.** `connect` announces it to whichever
   Server spoke to the Portal most recently, which is the failure the rest of process two exists to

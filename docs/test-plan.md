@@ -31,6 +31,7 @@ Behaviour is agreed here first, before any test or code — see
 | `SR` | An instance checking its own registration |
 | `ST` | The startup check that acts on it |
 | `SB` | Which instance a session belongs to |
+| `SY` | Which instance a `PSYNC` reply is being built for |
 
 ## Fixtures
 
@@ -121,6 +122,15 @@ The decision is kept out of the responder. Given the unpacked message, deciding 
 should do is plain data handling and is tested as such; the responder itself unpacks, delegates, and
 calls `super()`. Registering an absent name is already a no-op (IR-03), so there is no second guard.
 
+**The registration happens before `super()`, not after.** A `PSYNC` is both the announcement and the
+request for the Portal's sessions, and Evennia builds and sends that reply inside its own handler. So
+anything that has to be true while the reply is built — the connection registered, the instance named
+as the one being synced (SY) — has to be in place before the call, not after it.
+
+Nothing here depends on what `super()` does. `record_announcement` registers against `self`, the
+connection the message arrived on, and never consults `factory.server_connection` — which is the one
+thing Evennia's handler changes that could have mattered.
+
 | ID | Case | Test function |
 |---|---|---|
 | AR-01 | A message announcing a name registers that connection under it | test_ar_01_an_announcement_registers_the_connection |
@@ -131,6 +141,9 @@ calls `super()`. Registering an absent name is already a no-op (IR-03), so there
 | AR-06 | Losing a connection still calls Evennia's own `connectionLost` | test_ar_06_losing_a_connection_still_calls_the_base |
 | AR-07 | The responder is registered in the subclass's own dispatch table, not inherited from the base | test_ar_07_the_responder_is_registered_not_merely_overridden |
 | AR-08 | The generated class subclasses whatever protocol class the factory was given | test_ar_08_subclasses_the_class_it_was_given |
+| AR-09 | The connection is registered before Evennia's handling runs, which is what builds the reply | test_ar_09_registers_before_evennias_handling_runs |
+| AR-10 | Evennia's handling runs with the announcing instance named as the one being synced | test_ar_10_names_the_instance_while_evennia_handles_it |
+| AR-11 | Nothing is being synced once the message has been handled | test_ar_11_nothing_is_syncing_afterwards |
 
 ### RT — routing a send
 
@@ -163,6 +176,35 @@ and proved unnecessary, and RT-05 keeps that a decision rather than something th
 | RT-03 | It is restored even when the wrapped call raises | test_rt_03_restores_even_when_the_block_raises |
 | RT-04 | Routing to nothing leaves Evennia's own choice untouched, rather than clearing it | test_rt_04_routing_to_nothing_leaves_evennias_choice_alone |
 | RT-05 | `portal.amp_protocol` is not written to | test_rt_05_does_not_write_to_amp_protocol |
+
+### SY — which instance a sync is for
+
+When a Server attaches it sends `PSYNC`, and the Portal answers with every session it holds. With one
+Server that is the right answer. With three, each attaching Server is handed the other instances'
+sessions too, builds a `ServerSession` for each, and attaches any that carries a `uid` to its own
+account of that number.
+
+Filtering that reply needs to know which instance asked. The responder knows — the name arrives in the
+same message — and `get_all_sync_data` builds the payload and takes no arguments. This carries the name
+between them, for the length of one call.
+
+The same shape as `sending_to`, and safe for the same reason: the Portal is a single-threaded reactor,
+so nothing runs between setting the name and clearing it. That is a property of the environment rather
+than of this code.
+
+**A name, not a connection.** What the filter compares against is a session's binding, which is a
+name. Holding a connection here would mean resolving it back to a name on every session.
+
+**Nothing being synced is the ordinary state.** `get_all_sync_data` has other callers, and they should
+keep seeing every session — so "no instance is syncing" has to be distinguishable from "an instance
+with no sessions is syncing".
+
+| ID | Case | Test function |
+|---|---|---|
+| SY-01 | While syncing, the instance being synced is the one named | test_sy_01_names_the_instance_being_synced |
+| SY-02 | Outside the block, no instance is being synced | test_sy_02_outside_the_block_nothing_is_syncing |
+| SY-03 | It is cleared even when the wrapped call raises | test_sy_03_cleared_even_when_the_block_raises |
+| SY-04 | Whatever was being synced before is restored afterwards, not simply cleared | test_sy_04_restores_what_was_there_before |
 
 ### SB — which instance a session belongs to
 
@@ -496,6 +538,19 @@ resolve through `connection_for`, so they cannot disagree by construction.
 its connection queue. Both are unbound at that point and so resolve to the same default; a session is
 only ever bound later, by a move.
 
+**`get_all_sync_data` answers for one instance while a sync is in progress.** It builds the payload of
+a `PSYNC` reply, and Evennia hands that reply every session the Portal holds. Under several instances
+each attaching Server is then given the others' sessions, builds a `ServerSession` for each, and
+attaches any carrying a `uid` to its own account of that number — the same hazard MV-03 covers,
+reached by a path the move never touches.
+
+Filtered on the session's binding, which is the same answer `connect` and `data_in` route on. A
+session bound to an instance that is not attached syncs to nobody, which is what should happen: it
+belongs somewhere that is not listening.
+
+**Outside a sync it answers with everything.** The method has other callers, and `currently_syncing`
+returning nothing means "not a `PSYNC` reply", not "an instance holding no sessions".
+
 **`disconnect_all` is a broadcast, not a routed send.** It is one message telling a Server to drop
 everything it holds, and the Portal calls it when it shuts down. Sent once, the other instances carry
 on believing their players are still connected — characters standing in rooms with nobody at the
@@ -529,6 +584,10 @@ so it already reaches every player on every instance.
 | IN-15 | `disconnect` tells the instance actually holding the session | test_in_15_disconnect_tells_the_instance_holding_it |
 | IN-16 | `disconnect_all` reaches every attached instance, not just one | test_in_16_disconnect_all_reaches_every_instance |
 | IN-17 | `disconnect_all` still calls `super()`, which is what closes the Portal's own sockets | test_in_17_disconnect_all_still_closes_the_sockets |
+| IN-18 | While syncing, only the sessions bound to that instance are handed over | test_in_18_a_sync_carries_only_that_instances_sessions |
+| IN-19 | An unbound session goes to the default instance's sync, and nobody else's | test_in_19_an_unbound_session_syncs_to_the_default |
+| IN-20 | Outside a sync, every session is returned as before | test_in_20_outside_a_sync_everything_is_returned |
+| IN-21 | An instance holding no sessions is handed nothing, rather than everything | test_in_21_an_instance_with_no_sessions_gets_nothing |
 
 ### QY — asking the Portal which instances are attached
 

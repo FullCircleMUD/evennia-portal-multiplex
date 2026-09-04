@@ -30,6 +30,7 @@ MULTIPLEX_INSTANCE_ID = "server2"
 TELNET_PORTS = [4020]
 WEBSERVER_PORTS = [(4021, 4025)]
 WEBSOCKET_CLIENT_PORT = 4022
+SSH_PORTS = [4023]
 
 # server1's Portal, not one of ours. This is what makes this Server attach
 # there — and what makes every other launcher verb from this directory

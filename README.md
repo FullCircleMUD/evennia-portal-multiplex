@@ -17,14 +17,14 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 ## Status
 
 **Working, proven live.** 118 tests, and run against live instances: three Servers behind one Portal,
-with a session moved between them repeatedly on one unbroken connection — telnet and WebSocket
-alike, and with no protocol-specific code for either. A Server registers with its Portal on connect
+with a session moved between them repeatedly on one unbroken connection — over telnet, WebSocket and
+SSH alike, and with no protocol-specific code for any of them. A Server registers with its Portal on connect
 and refuses to start if that did not land; a player connecting lands on the default
 instance and everything said about their session follows it; a Server can ask for one of its sessions
 to be handed to another instance and is told the outcome; and an admin can reach every player on every
 instance at once.
 
-Telnet over SSL, SSH and the AJAX web client are untested.
+Telnet over SSL and the AJAX web client are untested.
 
 Early. One machine, demo gamedirs, and it turned up things still to work out — see
 [docs/progress.md](docs/progress.md) for what those runs proved and

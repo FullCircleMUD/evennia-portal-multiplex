@@ -2,6 +2,22 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — proven on SSH as well
+
+A session moved server1 -> server2 -> server3 -> server1 over SSH, in one connection. SSH negotiates a
+pty and holds a real terminal, and neither noticed the far end changing.
+
+Three transports now, and the same amount of protocol-specific code in each: none. `evennia-scaling`
+can move a browser and nothing else, and needs five modules to do it.
+
+The demo offers SSH so there is something to prove that against. It needs `bcrypt` and `pyasn1`, which
+Evennia does not pull in — see `examples/requirements.txt`. Evennia generates its own host keypair on
+first start, so there is nothing to make by hand.
+
+Still untested: telnet over SSL, and the AJAX web client. SSL is telnet with a TLS wrapper. AJAX is
+the one to be least confident about — it is long-polling rather than a held socket, so "the socket
+never moves" means something different there.
+
 ## 2026-09-04 — proven on WebSocket, with no WebSocket code
 
 A browser session moved server1 → server2 → server3 → server1 in one tab. No reconnect, no page
@@ -15,9 +31,7 @@ every protocol shares. A WebSocket session moves for the same reasons a telnet o
 That is the difference from `evennia-scaling`, which needs a protocol override, a middleware, a ticket
 table, a redemption path and IP pinning to move a browser — and can only do it for browsers.
 
-Untested: telnet over SSL, SSH, and the AJAX web client. SSL is telnet with a TLS wrapper and should
-behave identically. AJAX is the one to be least confident about: it is long-polling rather than a held
-socket, so "the socket never moves" means something different there.
+Untested at the time: telnet over SSL, SSH, and the AJAX web client.
 
 ## 2026-09-04 — a Server is handed only its own sessions
 

@@ -24,6 +24,7 @@ MULTIPLEX_INSTANCE_ID = "server1"
 TELNET_PORTS = [4000]
 WEBSERVER_PORTS = [(4001, 4005)]
 WEBSOCKET_CLIENT_PORT = 4002
+SSH_PORTS = [4003]
 
 # This instance's Portal listens here; the other two dial it.
 AMP_PORT = MULTIPLEX_AMP_PORT  # noqa: F405

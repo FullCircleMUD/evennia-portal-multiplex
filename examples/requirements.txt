@@ -14,6 +14,17 @@ evennia
 # the demo settings swap it in, gated on darwin.
 sqlean.py; sys_platform == "darwin"
 
+# SSH, which Evennia leaves off by default and does not pull the crypto for.
+# `cryptography` comes with Evennia; these two do not, and without them the
+# SSH listener refuses to start. Here rather than in the library's own
+# dependencies because this is a demo-harness choice: a consumer that does not
+# offer SSH needs neither.
+#
+# No keys to make by hand — Evennia generates its own host keypair under
+# server/ on first start.
+bcrypt
+pyasn1
+
 # The library itself, editable from the checkout above. Not on PyPI, and
 # editable means an edit takes effect in a running instance immediately —
 # no reinstall step between changing the library and testing it.

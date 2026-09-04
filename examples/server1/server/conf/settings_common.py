@@ -109,6 +109,22 @@ MULTIPLEX_DEFAULT_INSTANCE = "server1"
 MULTIPLEX_AMP_PORT = 4006
 
 ######################################################################
+# SSH
+######################################################################
+#
+# Off in Evennia by default. On here because a session should move whatever
+# protocol a player arrived on, and SSH is one of the ways in — so the demo
+# offers it to have something to prove that against.
+#
+# Needs `bcrypt` and `pyasn1`, which Evennia does not pull in; see
+# requirements.txt. The host keypair is Evennia's own, generated under
+# `server/` on first start.
+#
+# Declared here so the three agree about what this deployment offers. The
+# port each instance would listen on is per-instance, like every other port.
+SSH_ENABLED = True
+
+######################################################################
 # The launcher verb that starts a Server without a Portal
 ######################################################################
 #

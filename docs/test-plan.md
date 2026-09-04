@@ -218,6 +218,50 @@ decides nothing by itself. Both sends are wrapped in `sending_to`.
 the destination can build its session before the origin has released its own. Nothing here may assume
 the release completes first.
 
+**A build that fails puts the session back.** The origin has already let go by then, so a session left
+alone is a player connected to no Server at all. Instead the identity captured before it was cleared
+is restored, the session is rebound to the origin, and the same build step runs again pointing there.
+
+That rollback is the build step, not a second path. The one thing it varies is whether the identity is
+wiped or supplied — wiped moving away, supplied coming back. Nothing is sent to the destination, which
+never built anything to release.
+
+**Rebuilding on the origin is Evennia's own reload.** When a Server reconnects, the Portal hands back
+every session's sync data and they come back logged in and re-puppeted. Restoring `uid`, `logged_in`
+and `puid` and sending `PCONN` is the same operation on one session, which is why it can be relied on
+rather than hoped for.
+
+**Release first, then build — not the other way round.** Building at the destination before releasing
+the origin would avoid stranding anyone, but it leaves a window where the session exists on two Servers
+at once; a release that then failed would leave a ghost standing in the origin's world. Releasing first
+trades that for a stranded player, which the rollback recovers.
+
+**Knowing the build failed makes the move asynchronous.** The Deferred behind each send is what says
+whether the far end took the message, so the move resolves to its outcome rather than returning it. A
+responder can return a Deferred, so the command's reply waits on it.
+
+**One shape for every outcome.** Moved, already there, and refused all come back the same way, through
+the Deferred. The destination check still runs first and still stops everything else — what it does
+not do is answer by a different route from the answers that had to wait. A caller with one way to
+receive an outcome cannot forget which failures arrive which way.
+
+**Five outcomes, named.** `MOVED`, `ALREADY_THERE`, `NOT_ATTACHED`, `REJECTED`, `STRANDED`. A boolean
+cannot carry them, and the consumer decides what each one means for the game — a refusal might be a
+message to the player, a retry, or nothing at all. They cross to the Server as the command's declared
+response, unchanged.
+
+The names describe what happened to the session, not what this library did about it. A destination
+that would not take the session **rejected** it; that we then put the session back is bookkeeping the
+consumer has no use for. `STRANDED` is the one that has no recovery: released by the origin, refused
+by the destination, and the origin would not take it back either.
+
+**The move resolves to `(moved, outcome)`.** `moved` is true for `MOVED` and nothing else — including
+`ALREADY_THERE`, which is a consumer asking to send a session where it already is, and so a bug in
+their logic worth surfacing rather than a quiet success.
+
+**A rollback that also fails is logged and left.** Both Servers unreachable in the same instant is a
+different failure, and there is nowhere left to put the session. The player reconnects.
+
 | ID | Case | Test function |
 |---|---|---|
 | MV-01 | The instance being left is sent `PDISCONN` for that session | test_mv_01_the_instance_being_left_is_released |
@@ -225,9 +269,97 @@ the release completes first.
 | MV-03 | `uid`, `logged_in` and `puid` are cleared before the destination is told | test_mv_03_identity_is_cleared_before_the_destination_is_told |
 | MV-04 | The session is rebound to the destination | test_mv_04_the_session_is_rebound |
 | MV-05 | Each send is routed to its own instance rather than left to Evennia's global | test_mv_05_each_send_is_routed_to_its_own_instance |
-| MV-06 | Moving to an instance that is not attached does nothing and reports it | test_mv_06_an_unattached_destination_refuses |
+| MV-06 | Moving to an instance that is not attached does nothing and reports it, through the same Deferred as every other outcome | test_mv_06_an_unattached_destination_refuses |
 | MV-07 | Moving to where the session already is does nothing | test_mv_07_moving_to_where_it_already_is_does_nothing |
 | MV-08 | The session's transport is never touched — no disconnect, no close | test_mv_08_the_transport_is_never_touched |
+| MV-09 | The move resolves to its outcome rather than returning it, so a failed build can be acted on | test_mv_09_the_move_resolves_to_its_outcome |
+| MV-10 | A destination that fails to build puts the session back on the origin, with the identity it had | test_mv_10_a_failed_build_puts_the_session_back |
+| MV-11 | The rollback sends nothing to the destination, which never built anything to release | test_mv_11_the_rollback_leaves_the_destination_alone |
+| MV-12 | A rollback that also fails is logged, and the session is left where it is | test_mv_12_a_failed_rollback_is_logged |
+
+### MC — the move command
+
+`move_session` runs on the Portal, because the Portal is what holds the sessions and the connections.
+The decision to move one is the game's, and the game runs on a Server. This is the command that
+crosses between them.
+
+One class, imported by both processes: AMP matches on the command's key, so the Portal's responder and
+the Server's `callRemote` need the same definition, not two that agree.
+
+**The arguments are declared types, and that is the point of testing them.** A session id is an
+integer and a destination is a name; a type declared wrongly does not fail where it is written, it
+fails on the wire, at the moment somebody tries to move. The round trip is what catches it.
+
+**The response carries both halves of the outcome** — whether the session moved, and which of the five
+outcomes it was. It travels as declared fields rather than a pickled blob, so a Server reading it is
+reading types AMP checked.
+
+It lives in `move.py`, with the outcome constants it carries. The responder lives in `amp.py`, with
+the Portal's other one.
+
+**A session id the Portal does not hold is an outcome, not an error.** The usual cause is a player
+disconnecting between the game deciding to move them and the command arriving — a race, not a bad
+request. `NO_SUCH_SESSION` reports it the same way as the rest, and the Portal logs it too, because
+the Portal is the only side that knows which ids it does have.
+
+**The responder returns the move's Deferred**, so the reply carries the outcome rather than an
+acknowledgement that the message arrived. AMP waits on a Deferred a responder gives back.
+
+**Registered with the decorator, like every other responder.** Twisted builds the dispatch table at
+class creation; a method without it sits on the class and is never called. MC-06 is the same case as
+AR-07 and QY-07, and exists for the same reason.
+
+**`send_session` is the consumer's whole API, and it moves one session.** A move hands one socket from
+one Server to another. An account can hold several sessions, and whether they all follow is a game
+decision — the same reasoning that keeps rooms and characters out of this library keeps accounts out.
+A consumer wanting to move an account loops its sessions and decides for itself what to do when the
+third comes back refused after the first two moved.
+
+It takes a session and a destination name, and nothing about AMP: the Portal connection is the
+Server's own, and a consumer should not have to know it exists.
+
+**An optional payload rides with the move.** A destination Server often needs to know something about
+an arriving session that the session itself does not carry — which archive to rebuild it from, say.
+The command carries it from the Server to the Portal, the Portal stamps it onto the session's
+`server_data`, and `SESSION_SYNC_ATTRS` already sends that with the `PCONN`. Two hops, one field.
+
+**A dict in, a string out, and we never look inside it.** The consumer passes a dict; it is
+`json.dumps`ed onto the command and the string is what lands in `server_data`. Nothing of ours
+deserialises it, because **nothing of ours runs on the destination** — the session there is built by
+Evennia from the sync data, so the consumer's own code is the first thing of anyone's to see it, and
+`json.loads` is theirs to call. JSON types only: strings, numbers, booleans, lists, dicts and null.
+
+**It is not a ticket.** A moved session never leaves the Portal, so there is no untrusted hop — the
+destination trusts the instruction because it came from the Portal it is already attached to. The
+payload is context, not proof.
+
+**An optional payload rides with the move.** A destination Server often needs to know something about
+an arriving session that the session itself does not carry — which archive to rebuild it from, say.
+The command carries it from the Server to the Portal, and the Portal stamps it onto the session's
+`server_data`, which `SESSION_SYNC_ATTRS` already sends with the `PCONN`. Two hops, one field.
+
+**It is opaque, and it is not a ticket.** The library never looks inside it: a string, encoded and
+decoded by the consumer's own code at both ends. Accepting a dict would mean choosing a serialisation
+format for data we do not read, and owning it afterwards.
+
+Nor does it authenticate anything. A moved session never leaves the Portal, so there is no untrusted
+hop — the destination trusts the instruction because it came from the Portal it is already attached
+to. The payload is context, not proof, and building ticket checking on top of it would be solving a
+problem this transport does not have.
+
+| ID | Case | Test function |
+|---|---|---|
+| MC-01 | The session id and the destination survive the round trip | test_mc_01_the_arguments_survive_the_round_trip |
+| MC-02 | The outcome survives the round trip, both halves of it | test_mc_02_the_outcome_survives_the_round_trip |
+| MC-03 | The responder moves the session the id names, to the destination named | test_mc_03_the_responder_moves_the_named_session |
+| MC-04 | The reply carries the move's own outcome, waiting for it | test_mc_04_the_reply_carries_the_moves_outcome |
+| MC-05 | A session id the Portal does not hold is reported, and nothing is moved | test_mc_05_an_unknown_session_is_reported |
+| MC-06 | The responder is registered under the command's key | test_mc_06_the_responder_is_registered_under_the_commands_key |
+| MC-07 | `send_session` asks this Server's Portal to move that session, by id, to the instance named | test_mc_07_send_session_asks_its_portal_to_move_it |
+| MC-08 | It resolves to the outcome the Portal reported | test_mc_08_send_session_resolves_to_the_reported_outcome |
+| MC-09 | A payload is carried as JSON on the command, and a move without one carries nothing | test_mc_09_a_payload_is_carried_as_json |
+| MC-10 | The responder puts the payload where the sync data will carry it to the destination | test_mc_10_the_payload_is_put_where_the_sync_data_carries_it |
+| MC-11 | A move with no payload leaves the session's existing data untouched | test_mc_11_no_payload_leaves_the_session_alone |
 
 ### LC — launcher commands
 

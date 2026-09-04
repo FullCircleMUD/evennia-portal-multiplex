@@ -8,12 +8,14 @@ docstring, so the coverage trail reads in both directions.
 Discovered by Django's test runner via runtests.py at the repository root.
 """
 
+import json
 import unittest
 from unittest import mock
 
 from evennia.server.portal import amp as amp_module
 from evennia.utils.utils import class_from_module
 from twisted.internet import defer
+from twisted.internet.error import ConnectionDone
 
 from evennia_portal_multiplex.amp import make_amp_protocol, record_announcement
 from evennia_portal_multiplex.amp_client import (
@@ -39,7 +41,18 @@ from evennia_portal_multiplex.services import (
     make_server_service,
 )
 from evennia_portal_multiplex.sessionhandler import make_session_handler
-from evennia_portal_multiplex.move import NotAttached, move_session
+from evennia_portal_multiplex.move import (
+    ALREADY_THERE,
+    MOVED,
+    NOT_ATTACHED,
+    NO_SUCH_SESSION,
+    PAYLOAD_KEY,
+    REJECTED,
+    STRANDED,
+    MultiplexMoveSession,
+    move_session,
+    send_session,
+)
 
 
 def _patch_default(instance_id):
@@ -158,6 +171,259 @@ class TestInstanceRegistry(unittest.TestCase):
         registry.register("this-instance", self._connection())
         registry.register("second", self._connection())
         self.assertEqual(registry.attached(), sorted(["third", "this-instance", "second"]))
+
+
+class TestMoveCommand(unittest.TestCase):
+    """MC — the move command."""
+
+    def test_mc_01_the_arguments_survive_the_round_trip(self):
+        """MC-01: a type declared wrongly fails on the wire, not where written.
+
+        A session id is an integer and a destination is a name. Declaring
+        either as the wrong AMP type compiles, installs, and fails at the
+        moment somebody tries to move.
+
+        The payload is optional, and most moves carry none — so its absence
+        has to survive the trip as readily as its presence.
+        """
+        arguments = {
+            "sessid": 12,
+            "destination": "shard1",
+            "payload": json.dumps({"archive": "4f2a"}),
+        }
+        box = MultiplexMoveSession.makeArguments(arguments, None)
+        self.assertEqual(
+            MultiplexMoveSession.parseArguments(box, None), arguments
+        )
+
+        bare = {"sessid": 12, "destination": "shard1"}
+        box = MultiplexMoveSession.makeArguments(bare, None)
+        self.assertEqual(
+            MultiplexMoveSession.parseArguments(box, None).get("payload"), None
+        )
+
+    def test_mc_02_the_outcome_survives_the_round_trip(self):
+        """MC-02: both halves, as declared types rather than a pickled blob."""
+        response = {"moved": False, "outcome": REJECTED}
+        box = MultiplexMoveSession.makeResponse(response, None)
+        self.assertEqual(
+            MultiplexMoveSession.parseResponse(box, None), response
+        )
+
+
+class TestMoveResponder(unittest.TestCase):
+    """MC — the move command, Portal side."""
+
+    def _base(self):
+        """A stand-in for Evennia's Portal AMP protocol."""
+
+        class FakeAMPProtocol:
+            def data_in(self, packed_data):
+                return packed_data
+
+            def portal_receive_adminserver2portal(self, packed_data):
+                return None
+
+            def connectionLost(self, reason):
+                return None
+
+        return FakeAMPProtocol
+
+    def _protocol(self, sessions):
+        """A built protocol, with the Portal's sessions stood in for.
+
+        `sessions` is what `evennia.PORTAL_SESSION_HANDLER` holds — a mapping
+        of session id to session, which is how the responder resolves the id
+        it is handed.
+        """
+        registry = InstanceRegistry()
+        registry.register("second", mock.Mock(name="second"))
+        protocol = make_amp_protocol(self._base(), registry)()
+        return protocol, registry, mock.patch(
+            "evennia.PORTAL_SESSION_HANDLER", sessions, create=True
+        )
+
+    def _reply(
+        self, protocol, sessid, destination, moved=(True, MOVED), payload=None
+    ):
+        """Call the responder with the move itself stood in for."""
+        with mock.patch(
+            "evennia_portal_multiplex.amp.move_session",
+            return_value=defer.succeed(moved),
+        ) as moving:
+            answered = []
+            defer.maybeDeferred(
+                protocol.portal_receive_move_session,
+                sessid=sessid,
+                destination=destination,
+                payload=payload,
+            ).addCallback(answered.append)
+        self.assertTrue(answered, "the responder had not replied")
+        return answered[0], moving
+
+    def test_mc_03_the_responder_moves_the_named_session(self):
+        """MC-03: the id is resolved to a session before anything is moved."""
+        session = mock.Mock(name="session")
+        protocol, registry, sessions = self._protocol({12: session})
+        with sessions:
+            _reply, moving = self._reply(protocol, 12, "second")
+        self.assertEqual(
+            moving.call_args.args, (registry, session, "second")
+        )
+
+    def test_mc_04_the_reply_carries_the_moves_outcome(self):
+        """MC-04: the reply waits on the move rather than the message.
+
+        A responder that answered when the message arrived would tell the
+        Server a move happened before anybody knew whether it had.
+        """
+        protocol, _registry, sessions = self._protocol({12: mock.Mock()})
+        with sessions:
+            reply, _moving = self._reply(
+                protocol, 12, "second", moved=(False, REJECTED)
+            )
+        self.assertEqual(reply, {"moved": False, "outcome": REJECTED})
+
+    def test_mc_05_an_unknown_session_is_reported(self):
+        """MC-05: usually a player who disconnected mid-move.
+
+        A race rather than a bad request, so it is reported the same way as
+        every other outcome instead of raised.
+        """
+        protocol, _registry, sessions = self._protocol({})
+        with sessions, mock.patch(
+            "evennia_portal_multiplex.amp.move_session"
+        ) as moving:
+            answered = []
+            defer.maybeDeferred(
+                protocol.portal_receive_move_session,
+                sessid=99,
+                destination="second",
+            ).addCallback(answered.append)
+        self.assertEqual(
+            answered[0], {"moved": False, "outcome": NO_SUCH_SESSION}
+        )
+        moving.assert_not_called()
+
+    def test_mc_10_the_payload_is_put_where_the_sync_data_carries_it(self):
+        """MC-10: `server_data` is on SESSION_SYNC_ATTRS, so PCONN takes it.
+
+        Stamped before the move runs, or the sync data is taken without it and
+        the destination gets nothing.
+
+        Stored exactly as it arrived. Nothing of ours runs on the destination,
+        so the consumer's own code is what calls `json.loads`.
+        """
+        session = mock.Mock(name="session")
+        session.server_data = {}
+        protocol, _registry, sessions = self._protocol({12: session})
+        payload = json.dumps({"archive": "4f2a"})
+        with sessions:
+            self._reply(protocol, 12, "second", payload=payload)
+        self.assertEqual(session.server_data[PAYLOAD_KEY], payload)
+
+    def test_mc_11_no_payload_leaves_the_session_alone(self):
+        """MC-11: most moves carry nothing, and should touch nothing."""
+        session = mock.Mock(name="session")
+        session.server_data = {"something": "the game put here"}
+        protocol, _registry, sessions = self._protocol({12: session})
+        with sessions:
+            self._reply(protocol, 12, "second")
+        self.assertEqual(session.server_data, {"something": "the game put here"})
+
+    def test_mc_06_the_responder_is_registered_under_the_commands_key(self):
+        """MC-06: the same trap as AR-07 and QY-07.
+
+        Twisted builds the dispatch table at class creation, so a method
+        without the decorator sits on the class and is never called. Nothing
+        raises; the command is simply unhandled.
+        """
+        from evennia.server.portal.amp_server import AMPServerProtocol
+
+        generated = make_amp_protocol(AMPServerProtocol, InstanceRegistry())
+        _command, responder = generated._commandDispatch[
+            MultiplexMoveSession.commandName
+        ]
+        self.assertIs(responder, generated.portal_receive_move_session)
+
+
+class TestSendSession(unittest.TestCase):
+    """MC — the move command, Server side. The consumer's whole API."""
+
+    def _server(self, reply=None):
+        """This Server's AMP link to its Portal, stood in for."""
+        answer = reply if reply is not None else {"moved": True, "outcome": MOVED}
+        protocol = mock.Mock()
+        # A fresh Deferred per call: one carries its result once, so a shared
+        # one would hand the second caller whatever the first callback left.
+        protocol.callRemote.side_effect = (
+            lambda *args, **kwargs: defer.succeed(dict(answer))
+        )
+        service = mock.Mock()
+        service.amp_protocol = protocol
+        return protocol, mock.patch(
+            "evennia.EVENNIA_SERVER_SERVICE", service, create=True
+        )
+
+    def _session(self, sessid=12):
+        session = mock.Mock()
+        session.sessid = sessid
+        return session
+
+    def _sent(self, protocol):
+        return protocol.callRemote.call_args
+
+    def test_mc_07_send_session_asks_its_portal_to_move_it(self):
+        """MC-07: by id, because that is what crosses the wire.
+
+        The consumer passes a session and a destination and nothing about
+        AMP — the Portal connection is this Server's own, and they should not
+        have to know it exists.
+        """
+        protocol, server = self._server()
+        with server:
+            self._resolved(send_session(self._session(), "shard1"))
+        call = self._sent(protocol)
+        self.assertIs(call.args[0], MultiplexMoveSession)
+        self.assertEqual(call.kwargs["sessid"], 12)
+        self.assertEqual(call.kwargs["destination"], "shard1")
+
+    def test_mc_08_send_session_resolves_to_the_reported_outcome(self):
+        """MC-08: the Portal's answer, not an acknowledgement."""
+        protocol, server = self._server(
+            reply={"moved": False, "outcome": NOT_ATTACHED}
+        )
+        with server:
+            self.assertEqual(
+                self._resolved(send_session(self._session(), "absent")),
+                (False, NOT_ATTACHED),
+            )
+
+    def test_mc_09_a_payload_is_carried_as_json(self):
+        """MC-09: a dict in, a string on the wire.
+
+        The consumer's own code calls `json.loads` at the far end, because
+        nothing of ours runs there.
+        """
+        protocol, server = self._server()
+        with server:
+            self._resolved(
+                send_session(self._session(), "shard1", {"archive": "4f2a"})
+            )
+        self.assertEqual(
+            json.loads(self._sent(protocol).kwargs["payload"]),
+            {"archive": "4f2a"},
+        )
+
+        with server:
+            self._resolved(send_session(self._session(), "shard1"))
+        self.assertIsNone(self._sent(protocol).kwargs.get("payload"))
+
+    def _resolved(self, deferred):
+        captured = []
+        deferred.addCallback(captured.append)
+        self.assertTrue(captured, "send_session had not resolved")
+        return captured[0]
 
 
 class TestLauncherCommands(unittest.TestCase):
@@ -580,10 +846,17 @@ class TestMovingASession(unittest.TestCase):
     DEFAULT = "first"
 
     def _connection(self, factory):
-        """A connection that records every admin send, and where it went."""
+        """A connection that records every admin send, and where it went.
+
+        Sends answer with a Deferred, as Evennia's do: that reply is what
+        says whether the far end took the message. Put an operation in
+        ``fail_on`` and a send of it errbacks, which is how a Server that has
+        gone is stood in for.
+        """
         connection = mock.Mock()
         connection.factory = factory
         connection.sent = []
+        connection.fail_on = set()
 
         def send_admin(session, operation=None, **kwargs):
             # Recorded with the factory's current target, so a send left to
@@ -591,6 +864,9 @@ class TestMovingASession(unittest.TestCase):
             connection.sent.append(
                 (operation, kwargs, factory.server_connection)
             )
+            if operation in connection.fail_on:
+                return defer.fail(ConnectionDone("gone"))
+            return defer.succeed({})
 
         connection.send_AdminPortal2Server = send_admin
         return connection
@@ -640,8 +916,26 @@ class TestMovingASession(unittest.TestCase):
         return _patch_default(self.DEFAULT)
 
     def _move(self, registry, session, target):
+        """Run a move and return what it resolved to.
+
+        The move is asynchronous because the reply to each send is what says
+        whether the far end took it. Every send here answers immediately, so
+        the result is in hand by the time this returns; `_resolved` is what
+        insists on that rather than assuming it.
+        """
         with self._default():
-            return move_session(registry, session, target)
+            return self._resolved(move_session(registry, session, target))
+
+    def _resolved(self, deferred):
+        """The value a Deferred has already fired with.
+
+        Fails the test if it has not, rather than returning a Deferred that a
+        later assertion would silently compare against.
+        """
+        captured = []
+        deferred.addCallback(captured.append)
+        self.assertTrue(captured, "the move had not resolved")
+        return captured[0]
 
     def test_mv_01_the_instance_being_left_is_released(self):
         """MV-01: PDISCONN to where the session is now."""
@@ -705,19 +999,31 @@ class TestMovingASession(unittest.TestCase):
         self.assertEqual(second.sent[0][2], second)
 
     def test_mv_06_an_unattached_destination_refuses(self):
-        """MV-06: loud, because a fallback would look like success."""
+        """MV-06: reported, not raised, and by the same route as the rest.
+
+        The check runs before anything is sent, so the answer is known at
+        once — but a caller with one way to receive an outcome cannot forget
+        which failures arrive which way.
+        """
         registry, default, _second = self._world()
         session = self._session()
-        with self.assertRaises(NotAttached):
-            self._move(registry, session, "absent")
+        self.assertEqual(
+            self._move(registry, session, "absent"), (False, NOT_ATTACHED)
+        )
         self.assertEqual(default.sent, [])
         self.assertEqual(session.uid, 1)
 
     def test_mv_07_moving_to_where_it_already_is_does_nothing(self):
-        """MV-07: no sends, no clearing, and it says so."""
+        """MV-07: no sends, no clearing, and not reported as a success.
+
+        A consumer asking to send a session where it already is has a bug in
+        their logic, and `moved` being false is what surfaces it.
+        """
         registry, default, _second = self._world()
         session = self._session()
-        self.assertFalse(self._move(registry, session, self.DEFAULT))
+        self.assertEqual(
+            self._move(registry, session, self.DEFAULT), (False, ALREADY_THERE)
+        )
         self.assertEqual(default.sent, [])
         self.assertEqual(session.uid, 1)
 
@@ -727,6 +1033,79 @@ class TestMovingASession(unittest.TestCase):
         session = self._session()
         self._move(registry, session, "second")
         self.assertEqual(session.transport_calls, [])
+
+    def test_mv_09_the_move_resolves_to_its_outcome(self):
+        """MV-09: the reply to each send is what says the far end took it.
+
+        Returning an answer before those replies arrive would mean claiming a
+        move happened without knowing, which is the thing the rollback exists
+        to catch.
+        """
+        registry, _default, _second = self._world()
+        session = self._session()
+        self.assertEqual(
+            self._move(registry, session, "second"), (True, MOVED)
+        )
+
+    def test_mv_10_a_failed_build_puts_the_session_back(self):
+        """MV-10: the origin has already let go by then.
+
+        Left alone, the player is connected to a Portal and on no Server at
+        all. The identity captured before it was cleared goes back, the
+        session is rebound to the origin, and the same build runs again
+        pointing there — which is what Evennia's own reload does.
+        """
+        from evennia.server.portal.amp import PCONN
+
+        registry, default, second = self._world()
+        session = self._session()
+        second.fail_on = {PCONN}
+
+        self.assertEqual(
+            self._move(registry, session, "second"), (False, REJECTED)
+        )
+
+        # Back as it was: identity, binding, and a session the origin holds.
+        self.assertEqual(session.uid, 1)
+        self.assertTrue(session.logged_in)
+        self.assertEqual(session.puid, 7)
+        with self._default():
+            self.assertEqual(instance_for(session), self.DEFAULT)
+        rebuild = default.sent[-1]
+        self.assertEqual(rebuild[0], PCONN)
+        self.assertEqual(rebuild[1]["sessiondata"]["uid"], 1)
+
+    def test_mv_11_the_rollback_leaves_the_destination_alone(self):
+        """MV-11: nothing was built there, so there is nothing to release."""
+        from evennia.server.portal.amp import PCONN, PDISCONN
+
+        registry, _default, second = self._world()
+        session = self._session()
+        second.fail_on = {PCONN}
+
+        self._move(registry, session, "second")
+        self.assertNotIn(PDISCONN, [op for op, _, _ in second.sent])
+
+    def test_mv_12_a_failed_rollback_is_logged(self):
+        """MV-12: both Servers gone at once, and nowhere to put the session.
+
+        Nothing more can be done automatically, so the one thing that must
+        happen is that it is written down.
+        """
+        from evennia.server.portal.amp import PCONN
+
+        registry, default, second = self._world()
+        session = self._session()
+        second.fail_on = {PCONN}
+        default.fail_on = {PCONN}
+
+        with mock.patch(
+            "evennia_portal_multiplex.move.portal_multiplex_log"
+        ) as logging:
+            self.assertEqual(
+                self._move(registry, session, "second"), (False, STRANDED)
+            )
+        self.assertEqual(logging.call_args.kwargs.get("level"), "ERROR")
 
 
 class TestInstallation(unittest.TestCase):

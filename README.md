@@ -16,14 +16,13 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, unproven.** The mechanism is built and unit-tested — 88 tests — and **has never been run
-against live instances.** A Server registers with its Portal on connect, checks that it landed, and
-refuses to start if it did not; a player connecting lands on the default instance and everything said
-about their session follows it. Moving a session is built but has no trigger: nothing can ask for one
-yet.
+**Working, unproven.** The mechanism is built and unit-tested — 103 tests — and **has never been run
+against live instances.** A Server registers with its Portal on connect and refuses to start if that
+did not land; a player connecting lands on the default instance and everything said about their
+session follows it; and a Server can ask for one of its sessions to be handed to another instance.
 
-Not usable yet. See [docs/progress.md](docs/progress.md) for what exists and
-[docs/architecture.md](docs/architecture.md) for what does not.
+Not usable yet — nothing has been booted. See [docs/progress.md](docs/progress.md) for what exists and
+[docs/architecture.md](docs/architecture.md) for what is still open.
 
 ## Is this for me?
 

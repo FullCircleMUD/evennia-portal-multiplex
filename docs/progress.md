@@ -2,6 +2,24 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — a Server can ask for a move
+
+103 tests, linter clean. The last of the three processes closed, and with it the only piece that had
+been built with nothing calling it.
+
+- **`send_session(session, destination, payload=None)`** — the consumer's whole API. Returns a
+  Deferred resolving to `(moved, outcome)`. One session per call: an account can hold several, and
+  whether they all follow is a game decision.
+- **Five outcomes, named** — `MOVED`, `ALREADY_THERE`, `NOT_ATTACHED`, `REJECTED`, `STRANDED`, plus
+  `NO_SUCH_SESSION` when the Portal does not hold the id. All come back the same way, so a caller
+  never has to remember which failures arrive by which route.
+- **The move puts a session back when a destination refuses it.** The origin has already let go by
+  then. The identity captured before it was cleared is restored, the session is rebound, and the same
+  build step runs again pointing at the origin — which is Evennia's own reload, applied to one session.
+- **An optional payload rides with the move** — a dict, JSON on the wire, landing in the session's
+  `server_data`, which the sync data already carries. Context, not a ticket: a moved session never
+  leaves the Portal, so there is no untrusted hop to authenticate across.
+
 ## 2026-09-04 — a session lands where its input goes
 
 88 tests. `connect`, `sync` and `disconnect` now route the same way `data_in` already did, so all four

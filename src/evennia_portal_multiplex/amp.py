@@ -17,6 +17,13 @@ nothing logged. AR-07 exists to catch exactly that.
 See docs/test-plan.md § AR.
 """
 
+from .log import portal_multiplex_log
+from .move import (
+    NO_SUCH_SESSION,
+    PAYLOAD_KEY,
+    MultiplexMoveSession,
+    move_session,
+)
 from .query import MultiplexQueryRegistry
 from .services import INSTANCE_KEY
 
@@ -80,6 +87,46 @@ def make_amp_protocol(base, registry):
             it — nothing raised, the query simply unhandled. See QY-07.
             """
             return {"attached": evennia_amp.dumps(registry.attached())}
+
+        @MultiplexMoveSession.responder
+        @evennia_amp.catch_traceback
+        def portal_receive_move_session(self, sessid, destination, payload=None):
+            """Move the session this id names, and answer with the outcome.
+
+            The Portal holds the sessions and the connections, so the move
+            happens here; deciding it should happen is the game's, and the
+            game runs on a Server.
+
+            An id the Portal does not hold is an outcome, not an error: the
+            usual cause is a player disconnecting between the game deciding to
+            move them and this arriving. Logged here as well, because this is
+            the only side that knows which ids it does have.
+
+            The move's Deferred is returned rather than waited on. AMP waits
+            on a Deferred a responder gives back, so the reply carries the
+            outcome instead of an acknowledgement that the message arrived.
+            """
+            import evennia
+
+            session = evennia.PORTAL_SESSION_HANDLER.get(sessid)
+            if session is None:
+                portal_multiplex_log(
+                    f"Asked to move session {sessid}, which this Portal does "
+                    f"not hold. Holding: "
+                    f"{', '.join(str(held) for held in evennia.PORTAL_SESSION_HANDLER) or 'nothing'}."
+                )
+                return {"moved": False, "outcome": NO_SUCH_SESSION}
+
+            # Stamped before the move, because the move takes the sync data —
+            # set afterwards, the destination would already have been sent a
+            # copy without it. Stored exactly as it arrived: nothing of ours
+            # runs on the destination to decode it.
+            if payload is not None:
+                session.server_data[PAYLOAD_KEY] = payload
+
+            return move_session(registry, session, destination).addCallback(
+                lambda outcome: {"moved": outcome[0], "outcome": outcome[1]}
+            )
 
         def connectionLost(self, reason):
             """Drop this connection from the registry, then tear down as usual.

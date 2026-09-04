@@ -4,7 +4,10 @@ How the library is put together, which module does what, and what is not built y
 
 Three processes make up everything it does: **a Server booting and registering**, **a player
 connecting**, and **moving a session between Servers**. Each has its own section below, and each
-starts with the steps in order before the prose explaining them.
+starts with the steps in order before the prose explaining them. All three are complete; none has been
+run against live instances.
+
+The consumer's whole API is one function, `send_session` — see *What a consumer calls*.
 
 ## The problem
 
@@ -30,11 +33,11 @@ argument, which is why they test as plain data handling.
 | `config.py` | The two settings this library reads |
 | `registry.py` | Instance id → live AMP connection. No decisions, no sends |
 | `services.py` | Server side: announces this instance's name. Portal side: owns the registry, installs the recording protocol |
-| `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query |
+| `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query, and carries out a move |
 | `routing.py` | Points one send at one instance for the duration of a call |
 | `binding.py` | Which instance a session belongs to, and which connection that resolves to |
 | `sessionhandler.py` | Routes everything the Portal says about a session to the instance holding it |
-| `move.py` | The three-step move |
+| `move.py` | The move, its outcomes, the command that asks for one, and `send_session` |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
 | `startup.py` | Refusing to start when this instance is not registered |
 | `amp_client.py` | The Server's side of the AMP link: runs that check on connect, and names a Portal it could not reach |
@@ -211,15 +214,17 @@ portal-interactive mode, and a plain Portal shutdown leaves the Servers running.
 # Process three — moving a session between Servers
 
 Not a reconnection. The player's socket stays exactly where it is; only the Server it is fed to
-changes. **The mechanism is built; nothing can ask for it yet.**
+changes. No gaps: this process is complete.
 
-- **[gap]** game code decides a session should move — the consumer's call, but there is nothing to
-  call
-- **[gap]** the Server sends the Portal an AMP command naming the session and the destination
-- **[gap]** a responder on the Portal resolves the session id and calls `move_session`
-- **[library]** a session already on that instance returns, and sends nothing
-- **[library]** a destination that is not attached refuses, naming what *is* attached
-- **[library]** the origin is resolved before anything is sent, because rebinding changes the answer
+- **[consumer]** game code decides a session should move, and calls `send_session`
+- **[library]** the Server asks its Portal, naming the session by id and the destination by name, with
+  an optional payload
+- **[library]** the Portal's responder resolves the id to a session
+- **[library]** an id it does not hold is reported as `NO_SUCH_SESSION`, and nothing else runs
+- **[library]** a payload is stamped onto the session, where the sync data will carry it
+- **[library]** a session already on that instance is reported as `ALREADY_THERE`, and nothing is sent
+- **[library]** a destination that is not attached is reported as `NOT_ATTACHED`, and nothing is sent
+- **[library]** the origin and the session's identity are captured, before anything changes them
 - **[library]** the origin is told to release the session — `PDISCONN`
 - **[Evennia]** the origin Server tears down its own session
 - **[library]** `uid`, `logged_in` and `puid` are cleared, before the sync data is taken
@@ -227,11 +232,39 @@ changes. **The mechanism is built; nothing can ask for it yet.**
 - **[library]** the destination is told to build one — `PCONN`, with the session's sync data
 - **[Evennia]** the destination creates a session and runs its own login flow; the player is
   unauthenticated
+- **[library]** a destination that would not take it is `REJECTED`: the identity goes back, the session
+  is rebound to the origin, and the same build runs again pointing there
+- **[library]** an origin that will not take it back either is `STRANDED`, and logged
 - **[library]** everything the Portal says about the session now follows the new binding
-- **[gap]** the outcome is reported back to the Server that asked
+- **[library]** the outcome goes back to the Server that asked, as the command's reply
+- **[consumer]** the game reads the outcome, and at the destination reads the payload
 
 No socket is opened, closed or renegotiated at any point, on either the player's connection or the AMP
 links.
+
+## What a consumer calls
+
+`send_session(session, destination, payload=None)`, and nothing else. It returns a Deferred resolving
+to `(moved, outcome)`, where `moved` is true for `MOVED` and nothing else — including `ALREADY_THERE`,
+which is a consumer asking to send a session somewhere it already is, and so a bug in their logic
+worth surfacing rather than a quiet success.
+
+**One session per call.** An account can hold several, and whether they all follow is a game decision.
+A consumer moving an account loops its sessions and decides for itself what to do when the third comes
+back refused after the first two moved.
+
+**The payload is context, not a ticket.** A destination often needs to know something about an
+arriving session that the session does not carry — which archive to rebuild it from, say. It is a
+dict, `json.dumps`ed onto the command, stamped into `server_data[PAYLOAD_KEY]` by the Portal, and
+carried across by the sync data. JSON types only.
+
+Nothing of ours reads it back, because **nothing of ours runs on the destination** — the session there
+is built by Evennia from the sync data. The consumer's own code calls `json.loads`:
+
+    payload = session.server_data.get(PAYLOAD_KEY)
+
+It authenticates nothing. A moved session never leaves the Portal, so there is no untrusted hop — the
+destination trusts the instruction because it came from the Portal it is attached to.
 
 ## Why it is sent directly
 
@@ -249,22 +282,33 @@ is called, or the destination receives the old values and the clearing achieves 
 
 ## Refusing rather than falling back
 
-A destination that is not attached raises. Falling back would leave the player where they were while
-everything above believed they had moved, and the two would only disagree later, somewhere else.
-Routing falls back deliberately — traffic has to go somewhere real — but a move is a decision and can
-refuse.
+A destination that is not attached is reported, not silently substituted. Falling back would leave the
+player where they were while everything above believed they had moved, and the two would only disagree
+later, somewhere else. Routing falls back deliberately — traffic has to go somewhere real — but a move
+is a decision and can refuse.
 
-# What is built and not wired
+Every check runs before the first send, so a refusal is a decision not to start rather than a
+half-finished move. Any future reason to refuse has to be checked there too: one found after the
+origin has let go cannot leave the session where it was, because it is not there any more.
 
-One piece is complete and tested with nothing calling it:
+## Putting it back
 
-- **`move_session`** — no trigger. Nothing can ask for a move.
+The origin has already released the session by the time a build can fail, so a session left alone is a
+player connected to a Portal and on no Server at all.
+
+Instead the identity captured before it was cleared is restored, the session is rebound to the origin,
+and the same build step runs again pointing there — the one thing it varies is whether the identity is
+wiped or supplied. Nothing is sent to the destination, which never built anything to release.
+
+That rebuild is Evennia's own reload, applied to one session: when a Server reconnects, the Portal
+hands back every session's sync data and they come back logged in and re-puppeted.
+
+Building before releasing would avoid stranding anyone, but it leaves a window where the session exists
+on two Servers at once, and a release that then failed would leave a ghost standing in the origin's
+world. Releasing first trades that for a stranded player, which the rollback recovers.
 
 # Not designed yet
 
-- **The move trigger.** The intended shape is a `MultiplexCommand` — its own AMP command, with a
-  session id and a destination as declared arguments and an outcome as its response, so the Server
-  learns whether the move happened. Nothing is built.
 - **A Server asking the Portal to announce to everyone.** The Portal can already reach every player on
   every instance, because it holds every socket. What is missing is a way for a Server to ask for it —
   which is what an admin broadcast command would need. The command itself is a game concept and the

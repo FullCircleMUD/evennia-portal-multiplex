@@ -14,17 +14,17 @@ player's session from one server to another on command — without the session b
 whatever protocol it is using. Tagline: **"One portal, many servers, one session."**
 
 The mechanism is built and unit-tested. **It has never been run against live instances.** Read
-[docs/architecture.md](docs/architecture.md) before touching anything — particularly its *built and
-not wired* and *not designed yet* sections, which is where the loose ends are.
+[docs/architecture.md](docs/architecture.md) before touching anything — it covers the three processes
+the library carries out, and its *not designed yet* section is where the remaining loose ends are.
 
 For the big-picture overview, read [README.md](README.md).
 For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 88 tests, linters clean, no uncovered cases. Nothing has been booted. Two of the
-three processes are complete: a Server boots and registers or refuses to start, and a player connects
-and lands on the default instance. The third — moving a session — is built and has no trigger. See
+**Built, unproven.** 103 tests, linters clean, no uncovered cases. **Nothing has been booted.** All
+three processes are complete: a Server boots and registers or refuses to start, a player connects and
+lands on the default instance, and a Server can ask for one of its sessions to be moved. See
 [docs/progress.md](docs/progress.md).
 
 ## Where to read first

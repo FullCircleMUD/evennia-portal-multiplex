@@ -13,21 +13,23 @@ Instructions for Claude (and other LLM agents) working in this repository.
 player's session from one server to another on command — without the session being dropped or changed,
 whatever protocol it is using. Tagline: **"One portal, many servers, one session."**
 
-The mechanism is built, unit-tested, and has been run live once — three Servers behind one Portal,
-with a session moved between them. Read [docs/architecture.md](docs/architecture.md) before touching
-anything — it covers the four processes the library carries out, and its *not designed yet* section is
-where the loose ends are, including three the live run turned up.
+The mechanism is built, unit-tested, and has been run live — three Servers behind one Portal, with a
+session moved between them on telnet and on WebSocket. Read
+[docs/architecture.md](docs/architecture.md) before touching anything — it covers the four processes
+the library carries out, and its *not designed yet* section is where the loose ends are, including
+those the live runs turned up.
 
 For the big-picture overview, read [README.md](README.md).
 For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Working, proven once.** 107 tests, linters clean, no uncovered cases. All four processes are
-complete — a Server boots and registers or refuses to start, a player connects and lands on the
-default instance, a Server can ask for one of its sessions to be moved, and an admin can reach every
-player on every instance — and all four have been exercised against live instances. One run, on one
-machine, which turned up three things still to work out. See [docs/progress.md](docs/progress.md).
+**Working, proven on telnet and WebSocket.** 118 tests, linters clean, no uncovered cases. All four
+processes are complete — a Server boots and registers or refuses to start, a player connects and lands
+on the default instance, a Server can ask for one of its sessions to be moved, and an admin can reach
+every player on every instance — and all four have been exercised against live instances. No
+protocol-specific code exists for either protocol; the move never touches the socket. Telnet over SSL,
+SSH and the AJAX web client are untested. See [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 

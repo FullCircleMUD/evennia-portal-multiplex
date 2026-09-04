@@ -2,6 +2,23 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-04 — proven on WebSocket, with no WebSocket code
+
+A browser session moved server1 → server2 → server3 → server1 in one tab. No reconnect, no page
+reload, no ticket, no URL parameter, no injected JavaScript. `protocol_key` confirmed `websocket`
+rather than the AJAX fallback.
+
+**Nothing in the library was written for it.** The move is `PDISCONN` and `PCONN` on the AMP link and
+never touches the socket, and `connect`, `sync`, `disconnect` and `data_in` are on the session handler
+every protocol shares. A WebSocket session moves for the same reasons a telnet one does.
+
+That is the difference from `evennia-scaling`, which needs a protocol override, a middleware, a ticket
+table, a redemption path and IP pinning to move a browser — and can only do it for browsers.
+
+Untested: telnet over SSL, SSH, and the AJAX web client. SSL is telnet with a TLS wrapper and should
+behave identically. AJAX is the one to be least confident about: it is long-polling rather than a held
+socket, so "the socket never moves" means something different there.
+
 ## 2026-09-04 — a Server is handed only its own sessions
 
 118 tests, both linters clean, and verified live.

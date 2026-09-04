@@ -16,16 +16,19 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, proven once.** 107 tests, and run live: three Servers behind one Portal, with a telnet
-session moved between them seven times on one unbroken connection. A Server registers with its Portal
-on connect and refuses to start if that did not land; a player connecting lands on the default
+**Working, proven live.** 118 tests, and run against live instances: three Servers behind one Portal,
+with a session moved between them repeatedly on one unbroken connection — telnet and WebSocket
+alike, and with no protocol-specific code for either. A Server registers with its Portal on connect
+and refuses to start if that did not land; a player connecting lands on the default
 instance and everything said about their session follows it; a Server can ask for one of its sessions
 to be handed to another instance and is told the outcome; and an admin can reach every player on every
 instance at once.
 
-Early. One run, on one machine, against demo gamedirs, and it turned up things still to work out —
-see [docs/progress.md](docs/progress.md) for what that run proved and
-[docs/architecture.md](docs/architecture.md) for what it left open.
+Telnet over SSL, SSH and the AJAX web client are untested.
+
+Early. One machine, demo gamedirs, and it turned up things still to work out — see
+[docs/progress.md](docs/progress.md) for what those runs proved and
+[docs/architecture.md](docs/architecture.md) for what they left open.
 
 ## Is this for me?
 

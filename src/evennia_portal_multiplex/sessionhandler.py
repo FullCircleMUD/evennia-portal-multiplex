@@ -86,4 +86,32 @@ def make_session_handler(base, registry):
             with sending_to(connection_for(registry, session)):
                 return super().disconnect(session)
 
+        def disconnect_all(self):
+            """Tell every attached instance to drop everything it holds.
+
+            A broadcast rather than a routed send: this is one message meaning
+            "drop all your sessions", and the Portal sends it when it shuts
+            down. Sent once, the other instances carry on believing their
+            players are still connected — characters standing in rooms with
+            nobody at the keyboard.
+
+            **`super()` sends one more, deliberately.** Evennia welds the send
+            to the teardown: the callback that closes the Portal's own sockets
+            is attached to that send's Deferred. Skipping it would leave every
+            socket open, and reimplementing it would mean carrying a copy of
+            the watchdog that stops `disconnect` deleting sessions mid-loop —
+            a copy that goes stale silently the first time Evennia changes
+            theirs. So the last message lands on a Server that has already
+            dropped everything and finds nothing to do.
+            """
+            from evennia.server.portal.amp import DUMMYSESSION, PDISCONNALL
+
+            for instance_id in registry.attached():
+                connection = registry.connection_for(instance_id)
+                with sending_to(connection):
+                    connection.send_AdminPortal2Server(
+                        DUMMYSESSION, operation=PDISCONNALL
+                    )
+            return super().disconnect_all()
+
     return MultiplexPortalSessionHandler

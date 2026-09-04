@@ -4,17 +4,21 @@ Running log of milestones with links to evidence. Reverse chronological — newe
 
 ## 2026-09-04 — a session lands where its input goes
 
-86 tests. `connect`, `sync` and `disconnect` now route the same way `data_in` already did, so all four
+88 tests. `connect`, `sync` and `disconnect` now route the same way `data_in` already did, so all four
 things the Portal says about a session resolve through `connection_for` and cannot pick different
 Servers.
+
+`disconnect_all` is the one that is not routed but broadcast: a Portal shutting down tells every
+attached instance to drop everything it holds, then Evennia closes the Portal's own sockets. Sent
+once, the other instances carried on believing their players were still connected. `announce_all`
+needs nothing — it writes to the Portal's own sockets and never involves a Server.
 
 Unrouted, they went to whichever Server had last spoken to the Portal while everything typed went to
 the default: the session was created on one Server and spoken to on another that had never heard of
 it — a login screen, and then nothing the player typed doing anything. Whether it bit depended on AMP
 timing at boot.
 
-That completes a player connecting, apart from broadcasts: `disconnect_all` and `announce_all` still
-reach one Server.
+That completes a player connecting, from the socket opening to the Portal shutting down.
 
 ## 2026-09-04 — a Server refuses to start when it is not registered
 

@@ -22,7 +22,7 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Built, unproven.** 86 tests, linters clean, no uncovered cases. Nothing has been booted. Two of the
+**Built, unproven.** 88 tests, linters clean, no uncovered cases. Nothing has been booted. Two of the
 three processes are complete: a Server boots and registers or refuses to start, and a player connects
 and lands on the default instance. The third — moving a session — is built and has no trigger. See
 [docs/progress.md](docs/progress.md).
@@ -132,6 +132,7 @@ evennia-portal-multiplex/
 │       ├── amp_client.py            # the Server's AMP protocol and factory; the startup check's call site
 │       ├── routing.py               # pointing one send at one instance
 │       ├── binding.py               # which instance a session belongs to
+│       ├── sessionhandler.py        # routing what the Portal says about a session
 │       ├── move.py                  # the three-step move
 │       ├── query.py                 # MultiplexQueryRegistry
 │       ├── startup.py               # refusing to start when unregistered

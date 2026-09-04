@@ -328,6 +328,20 @@ resolve through `connection_for`, so they cannot disagree by construction.
 its connection queue. Both are unbound at that point and so resolve to the same default; a session is
 only ever bound later, by a move.
 
+**`disconnect_all` is a broadcast, not a routed send.** It is one message telling a Server to drop
+everything it holds, and the Portal calls it when it shuts down. Sent once, the other instances carry
+on believing their players are still connected — characters standing in rooms with nobody at the
+keyboard. So it goes to every attached connection.
+
+**Then `super()` runs, and sends one more.** Evennia welds the send to the teardown: the callback that
+closes the Portal's own sockets is attached to that send's Deferred, so skipping it would leave every
+socket open. The extra message lands on a Server that has already dropped everything and finds nothing
+to do. A redundant message is cheaper than a copy of Evennia's teardown, which would go stale silently
+the first time they changed it.
+
+`announce_all` needs none of this. It writes to the Portal's own sockets and never involves a Server,
+so it already reaches every player on every instance.
+
 | ID | Case | Test function |
 |---|---|---|
 | IN-01 | The Portal service holds the registry it was given, for the life of the process | test_in_01_the_portal_service_holds_the_registry_it_was_given |
@@ -345,6 +359,8 @@ only ever bound later, by a move.
 | IN-13 | `connect` announces a new session down the connection its input will use | test_in_13_a_new_session_is_announced_where_its_input_goes |
 | IN-14 | `sync` follows the same connection, so a telnet client's negotiated flags reach the Server holding the session | test_in_14_sync_follows_the_same_connection |
 | IN-15 | `disconnect` tells the instance actually holding the session | test_in_15_disconnect_tells_the_instance_holding_it |
+| IN-16 | `disconnect_all` reaches every attached instance, not just one | test_in_16_disconnect_all_reaches_every_instance |
+| IN-17 | `disconnect_all` still calls `super()`, which is what closes the Portal's own sockets | test_in_17_disconnect_all_still_closes_the_sockets |
 
 ### QY — asking the Portal which instances are attached
 

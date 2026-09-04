@@ -819,6 +819,11 @@ class TestInstallation(unittest.TestCase):
             def disconnect(self, session):
                 self._record("disconnect", session)
 
+            def disconnect_all(self):
+                # Evennia's sends one message and closes every socket in the
+                # callback attached to it. Skipping it leaves them open.
+                self._record("disconnect_all", None)
+
         return FakeSessionHandler
 
     def _handler_world(self):
@@ -897,6 +902,37 @@ class TestInstallation(unittest.TestCase):
         with _patch_default(self.DEFAULT):
             handler.disconnect(session)
         self.assertEqual(handler.sent[0][1], second)
+
+    def test_in_16_disconnect_all_reaches_every_instance(self):
+        """IN-16: a Portal shutting down speaks to every Server it has.
+
+        Sent once, the other instances carry on believing their players are
+        still connected — characters standing in rooms with nobody at the
+        keyboard.
+        """
+        from evennia.server.portal.amp import PDISCONNALL
+
+        handler, default, second = self._handler_world()
+        with _patch_default(self.DEFAULT):
+            handler.disconnect_all()
+        for connection in (default, second):
+            self.assertEqual(
+                connection.send_AdminPortal2Server.call_args.kwargs["operation"],
+                PDISCONNALL,
+            )
+
+    def test_in_17_disconnect_all_still_closes_the_sockets(self):
+        """IN-17: Evennia welds the send to the teardown.
+
+        The callback that closes the Portal's own sockets is attached to that
+        send's Deferred, so skipping `super()` would leave every socket open.
+        Its message lands on a Server that has already dropped everything and
+        finds nothing to do.
+        """
+        handler, _default, _second = self._handler_world()
+        with _patch_default(self.DEFAULT):
+            handler.disconnect_all()
+        self.assertIn("disconnect_all", [sent[2] for sent in handler.sent])
 
     # -- AppConfig ------------------------------------------------------
 

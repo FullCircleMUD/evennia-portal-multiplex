@@ -143,8 +143,8 @@ it. Ours goes on after the patch, so the chain is ours → patched → Evennia's
 
 # Process two — a player connecting
 
-A new session, from the socket opening to the player typing. One gap, and it is not on this path for a
-single Portal shutting down cleanly.
+A new session, from the socket opening to the player typing, and everything the Portal says about it
+afterwards. No gaps: this process is complete.
 
 - **[Evennia]** the player's client connects; the protocol calls `sessionhandler.connect()`
 - **[library]** the announcement goes down the connection this session's input will use — the default
@@ -162,8 +162,8 @@ single Portal shutting down cleanly.
 - **[Evennia]** Evennia's `data_in` applies the character limit, the command-rate limit,
   `clean_senddata` and the local echo
 - **[library]** on disconnect, the instance actually holding the session is the one told
-- **[gap]** `disconnect_all` and `announce_all` reach one Server, so a Portal shutdown would leave the
-  other instances' sessions hanging
+- **[library]** when the Portal shuts down, every attached instance is told to drop everything it
+  holds, then Evennia closes the Portal's own sockets
 
 ## Announce and input have to agree
 
@@ -189,6 +189,24 @@ The binding is held **as a name, not a connection**. The Portal outlives Servers
 `reload` works — so a Server that restarts comes back on a new connection and the registry replaces
 its entry. A session holding the old connection object would be writing into a dead one, silently. A
 session holding the name follows the replacement without noticing.
+
+## Shutting the Portal down
+
+`disconnect_all` is the one thing on this path that is not a routed send. It is a single message
+meaning "drop all your sessions", so it goes to every attached connection rather than to one — sent
+once, the other instances carry on believing their players are still connected.
+
+`super()` then sends one more. Evennia welds the send to the teardown: the callback that closes the
+Portal's own sockets is attached to that send's Deferred. Skipping it leaves every socket open, and
+reimplementing it means carrying a copy of the watchdog that stops `disconnect` deleting sessions
+mid-loop. The extra message lands on a Server that has already dropped everything and finds nothing to
+do, which is cheaper than a copy that goes stale silently.
+
+`announce_all` needs none of this. It writes to the Portal's own sockets and never involves a Server,
+so it already reaches every player on every instance.
+
+`stop_server` — the Portal telling a Server to shut down — is not on this path. It only runs in
+portal-interactive mode, and a plain Portal shutdown leaves the Servers running.
 
 # Process three — moving a session between Servers
 
@@ -247,7 +265,9 @@ One piece is complete and tested with nothing calling it:
 - **The move trigger.** The intended shape is a `MultiplexCommand` — its own AMP command, with a
   session id and a destination as declared arguments and an outcome as its response, so the Server
   learns whether the move happened. Nothing is built.
-- **Broadcasts.** `disconnect_all` and `announce_all` reach one Server. Under several, a shutdown
-  announcement would leave the others' sessions hanging.
+- **A Server asking the Portal to announce to everyone.** The Portal can already reach every player on
+  every instance, because it holds every socket. What is missing is a way for a Server to ask for it —
+  which is what an admin broadcast command would need. The command itself is a game concept and the
+  consumer's; the Server-to-Portal half would be here.
 - **Where an instance lands when none of the defaults is attached.** `MULTIPLEX_DEFAULT_INSTANCE`
   takes a single name today; an ordered list was discussed and not built.

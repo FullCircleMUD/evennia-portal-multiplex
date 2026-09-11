@@ -24,6 +24,9 @@ is fixed. That failure is the signal to delete this file.
 See docs/test-plan.md § PT.
 """
 
+# The module whose attribute this patch rebinds, and whose factory it
+# subclasses. This file exists only to fix an Evennia bug in place, so reaching
+# for Evennia here is the entire point of it — see the docstring.
 from evennia.server import amp_client
 
 

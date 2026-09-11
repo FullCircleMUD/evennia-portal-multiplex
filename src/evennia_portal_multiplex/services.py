@@ -14,11 +14,7 @@ override costs a class object and nothing else.
 See docs/test-plan.md § IA.
 """
 
-from .config import get_instance_id
-
-#: The key an instance's name travels under inside Evennia's ``info_dict``.
-#: Prefixed because the dict is Evennia's and a consumer may add to it too.
-INSTANCE_KEY = "multiplex_instance_id"
+from .config import INSTANCE_KEY, get_instance_id
 
 #: Set by `AppConfig.ready()` to the generated classes, so the dotted paths in
 #: the settings resolve. Evennia looks each one up by string.

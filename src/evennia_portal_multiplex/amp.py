@@ -18,15 +18,10 @@ See docs/test-plan.md § AR.
 """
 
 from .announce import MultiplexAnnounce
+from .config import INSTANCE_KEY, NO_SUCH_SESSION, PAYLOAD_KEY
 from .log import portal_multiplex_log
-from .move import (
-    NO_SUCH_SESSION,
-    PAYLOAD_KEY,
-    MultiplexMoveSession,
-    move_session,
-)
+from .move import MultiplexMoveSession, move_session
 from .query import MultiplexQueryRegistry
-from .services import INSTANCE_KEY
 from .syncing import syncing_for
 
 
@@ -61,6 +56,10 @@ def make_amp_protocol(base, registry):
     obvious source for it and a test can supply its own.
     """
 
+    # The responders below decorate with Evennia's own AMP command classes and
+    # its traceback catcher, and Twisted builds the dispatch table from those
+    # decorators at class-creation time. There is no version of this class that
+    # does not reach for them.
     from evennia.server.portal import amp as evennia_amp
 
     class MultiplexAMPServerProtocol(base):
@@ -125,6 +124,9 @@ def make_amp_protocol(base, registry):
             on a Deferred a responder gives back, so the reply carries the
             outcome instead of an acknowledgement that the message arrived.
             """
+            # The Portal's live session handler, which only a running Portal
+            # has — hence inside the responder rather than at module scope.
+            # An id resolves to a session object nothing else here holds.
             import evennia
 
             session = evennia.PORTAL_SESSION_HANDLER.get(sessid)
@@ -157,6 +159,9 @@ def make_amp_protocol(base, registry):
             Server's method of the same name reaches only its own handler's
             sessions.
             """
+            # Same reason as the responder above: `announce_all` is a method on
+            # the Portal's live session handler, and only a running Portal has
+            # one.
             import evennia
 
             evennia.PORTAL_SESSION_HANDLER.announce_all(message)

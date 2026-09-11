@@ -74,9 +74,10 @@ the AJAX web client are untested. See [docs/progress.md](docs/progress.md).
   consumer.
 - **Why a session should move.** Rooms, characters, what makes a move legal at this moment: the
   consumer's. This library moves a session and has no opinion about the reason.
-- **Anything needing a third dependency.** Evennia and the standard library, nothing else. If this
-  library ever grows another dependency, that is the signal the boundary has moved and worth stopping
-  to look at.
+- **Anything needing a functional dependency.** A message bus, an archive, anything that would drag
+  game concepts or another library's runtime in behind it. Evennia, the standard library, and
+  `evennia-logging-extension` for the log file every library in this corpus writes through. A
+  *functional* dependency arriving is the signal the boundary has moved and worth stopping to look at.
 
 ## Working conventions
 
@@ -130,7 +131,7 @@ evennia-portal-multiplex/
 │   └── evennia_portal_multiplex/    # library code (src layout)
 │       ├── __init__.py
 │       ├── apps.py                 # AppConfig — the only way into either process
-│       ├── config.py                # the two settings this library reads
+│       ├── config.py                # the two settings, and every constant
 │       ├── registry.py              # instance id -> live AMP connection
 │       ├── services.py              # the Server and Portal service overrides
 │       ├── amp.py                   # the Portal's AMP protocol
@@ -144,7 +145,7 @@ evennia-portal-multiplex/
 │       ├── startup.py               # refusing to start when unregistered
 │       ├── launcher.py              # `evennia server_start`
 │       ├── evennia_patch.py         # a local fix for an Evennia bug. Deletable
-│       ├── log.py                   # shim onto Evennia's logger → portalmultiplex.log
+│       ├── log.py                   # binds portal_multiplex_log → portalmultiplex.log
 │       └── tests.py                 # unit tests, run via runtests.py
 └── tests/                           # standalone test infrastructure
     ├── __init__.py
@@ -161,7 +162,7 @@ No `contrib/` and no `db_router.py` — nothing opt-in exists and the library ow
 ## Tools and environment
 
 - Python 3.10+ (pinned via `pyproject.toml`).
-- Runtime dependencies: `evennia`.
+- Runtime dependencies: `evennia`, `evennia-logging-extension` (sibling checkout, editable install).
 - **Tests use Django's test runner** via `runtests.py`, which bootstraps Django then calls
   `evennia._init()`, as the siblings do. No gamedir required.
 - Dedicated venv at `evennia-portal-multiplex/venv/` (gitignored). Development install via

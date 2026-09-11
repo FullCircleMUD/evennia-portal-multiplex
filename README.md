@@ -41,7 +41,7 @@ this moment: all yours. This moves a session between Servers and nothing else.
 
 ## Install
 
-Not published. From a checkout:
+Not published, and neither is `evennia-logging-extension`, which it logs through. From a checkout:
 
 ```bash
 git clone https://github.com/FullCircleMUD/evennia-portal-multiplex.git
@@ -49,6 +49,7 @@ cd evennia-portal-multiplex
 python -m venv venv
 # Activate the venv (platform-specific)
 pip install evennia
+pip install -e path/to/evennia-logging-extension
 pip install -e .
 python runtests.py
 ```

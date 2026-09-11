@@ -20,11 +20,7 @@ is a decision, not a leftover.
 See docs/test-plan.md § SB.
 """
 
-from .config import get_default_instance
-
-#: The attribute a session's instance name is stamped on. Prefixed because a
-#: Portal session is an Evennia object and a consumer may stamp their own.
-BINDING_KEY = "_multiplex_instance"
+from .config import BINDING_KEY, get_default_instance
 
 
 def bind(session, instance_id):

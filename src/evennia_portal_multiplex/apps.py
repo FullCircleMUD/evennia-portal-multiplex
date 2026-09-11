@@ -100,6 +100,11 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         names ours returns rather than layering a second time.
         """
         from django.conf import settings
+
+        # Evennia resolves these class settings by dotted path, and this method
+        # has to resolve the consumer's current value the same way in order to
+        # subclass it. Using Evennia's own resolver rather than an import of
+        # our own is what keeps the two in step.
         from evennia.utils.utils import class_from_module
 
         ours = f"{module.__name__}.{attribute}"

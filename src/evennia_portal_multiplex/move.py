@@ -21,26 +21,18 @@ See docs/test-plan.md § MV.
 from twisted.protocols import amp
 
 from .binding import bind, connection_for, instance_for
+from .config import (
+    ALREADY_THERE,
+    IDENTITY,
+    MOVED,
+    NOT_ATTACHED,
+    NO_SUCH_SESSION,
+    PAYLOAD_KEY,
+    REJECTED,
+    STRANDED,
+)
 from .log import portal_multiplex_log
 from .routing import sending_to
-
-
-#: What a move resolves to. The names describe what happened to the session,
-#: not what this library did about it — a destination that would not take the
-#: session **rejected** it, and that we then put the session back is
-#: bookkeeping the consumer has no use for.
-MOVED = "moved"
-ALREADY_THERE = "already_there"
-NOT_ATTACHED = "not_attached"
-REJECTED = "rejected"
-STRANDED = "stranded"
-NO_SUCH_SESSION = "no_such_session"
-
-#: Where a payload lands on the session. `server_data` is on
-#: ``SESSION_SYNC_ATTRS``, so what is put there crosses with the ``PCONN``.
-#: Prefixed because the dict is Evennia's and a consumer keeps their own keys
-#: in it too.
-PAYLOAD_KEY = "multiplex_payload"
 
 
 def send_session(session, destination, payload=None):
@@ -68,6 +60,10 @@ def send_session(session, destination, payload=None):
     """
     import json
 
+    # This Server's live AMP link to its Portal, which is the only way to ask
+    # for the move. It exists once the Server is running, so the import is here
+    # rather than at module scope — a consumer importing `send_session` does
+    # not need an engine until they call it.
     import evennia
 
     return evennia.EVENNIA_SERVER_SERVICE.amp_protocol.callRemote(
@@ -106,13 +102,6 @@ class MultiplexMoveSession(amp.Command):
     ]
 
 
-#: The fields cleared on the way out and restored on the way back. All three
-#: are on ``SESSION_SYNC_ATTRS`` and all three are primary keys belonging to
-#: the Server being left: carried across, the destination believes the session
-#: is already authenticated as whatever account holds that id over there.
-IDENTITY = {"uid": None, "logged_in": False, "puid": None}
-
-
 def move_session(registry, session, instance_id):
     """Hand ``session`` from the instance it is on to ``instance_id``.
 
@@ -126,6 +115,9 @@ def move_session(registry, session, instance_id):
     """
     from twisted.internet import defer
 
+    # The wire constant for "drop this session", which is Evennia's protocol
+    # rather than ours — the move speaks Evennia's existing messages so the
+    # Servers at either end need nothing new to understand it.
     from evennia.server.portal.amp import PDISCONN
 
     if instance_for(session) == instance_id:
@@ -172,6 +164,9 @@ def _build_at(session, connection, instance_id, identity):
     coming back — and it is applied *before* the sync data is taken, or the
     far end receives the old values and the setting achieves nothing.
     """
+    # The wire constant for "build a session", Evennia's like `PDISCONN` above.
+    # The destination runs its own ordinary connect path off it, which is why
+    # nothing of ours has to be installed there for a move to land.
     from evennia.server.portal.amp import PCONN
 
     for field, value in identity.items():

@@ -33,6 +33,8 @@ pyasn1
 # none of its overrides install, and nothing reports a problem, because
 # Evennia has no way to know it was meant to be there.
 #
-# Evennia is the only other dependency. There are no sibling libraries to
-# install first.
+# Evennia and evennia-logging-extension are the other dependencies. The
+# extension is a sibling checkout, editable for the same reason, and above
+# the library so pip has it before the library imports it.
+-e ../../evennia-logging-extension
 -e ..

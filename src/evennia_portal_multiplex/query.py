@@ -20,6 +20,9 @@ which is a dozen lines in the obvious place.
 See docs/test-plan.md § QY.
 """
 
+# Evennia's AMP module for `dumps`/`loads` — the reply carries a list of
+# instance names, and encoding it the way every other Evennia AMP payload is
+# encoded means the Portal and Server agree without a format of our own.
 from evennia.server.portal import amp as evennia_amp
 from twisted.protocols import amp
 

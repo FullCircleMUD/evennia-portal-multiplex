@@ -48,6 +48,9 @@ def broadcast_to_all_instances(message):
     passes a string and nothing about AMP — the Portal connection is this
     Server's own, and they should not have to know it exists.
     """
+    # This Server's live AMP link to its Portal — the Portal is the only party
+    # that can reach every instance's sessions. Available once the Server is
+    # running, so the import is here rather than at module scope.
     import evennia
 
     return evennia.EVENNIA_SERVER_SERVICE.amp_protocol.callRemote(

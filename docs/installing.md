@@ -1,7 +1,7 @@
 # Installing
 
-What a game has to do to run several Servers behind one Portal. Everything here is settings and one
-install line; the library has no tables, no migrations and no management commands.
+What a game has to do to run several Servers behind one Portal. Everything here is settings and two
+install lines; the library has no tables, no migrations and no management commands.
 
 The working example of all of it is [examples/](../examples/) — three instances sharing one source
 tree, differing only in settings.
@@ -13,27 +13,37 @@ attaches to it. That instance is the *default*: a player who connects and has no
 lands there.
 
 **Give every instance a name.** They have to be distinct, or the second to attach replaces the first
-in the Portal's registry and takes its sessions.
+in the registry and takes its sessions.
 
-## Install
+## 1. Install the packages
 
-Evennia and the standard library are the only dependencies. Not on PyPI, so from a checkout:
+Evennia, and `evennia-logging-extension` for the library's own log file. Neither this library nor the
+extension is on PyPI, so both install from a checkout — the extension first:
 
 ```bash
+pip install -e path/to/evennia-logging-extension
 pip install -e path/to/evennia-portal-multiplex
 ```
 
-## Settings every instance needs
+The extension needs nothing in `INSTALLED_APPS` and declares no settings of its own.
+
+## 2. Add the app
+
+On every instance, the Portal's and the Servers':
 
 ```python
 INSTALLED_APPS = list(INSTALLED_APPS) + ["evennia_portal_multiplex"]
+```
 
+This is what installs the library at all. Its `AppConfig.ready()` is the only way it gets into either
+process, so without this line nothing happens and nothing says why.
+
+## 3. Name this instance, and the default
+
+```python
 MULTIPLEX_INSTANCE_ID = "shard1"          # this instance's name. Distinct per instance
 MULTIPLEX_DEFAULT_INSTANCE = "router"     # where an unmoved session belongs. The same on all
 ```
-
-`INSTALLED_APPS` is what installs the library at all. Its `AppConfig.ready()` is the only way it gets
-into either process, so without that line nothing happens and nothing says why.
 
 If your game already names its instances — `evennia-message-bus` does — alias rather than maintain two
 names for one thing:
@@ -45,21 +55,18 @@ MULTIPLEX_INSTANCE_ID = MESSAGEBUS_INSTANCE_ID
 Nothing checks the two agree. If they drift, a session is addressed by one name and routed by another,
 and the only symptom is traffic arriving at the default while everything above believes it moved.
 
-## Settings that differ per instance
+## 4. Give the Portal instance its port
 
-**The Portal instance** listens on its own AMP port and is started normally:
+The Portal instance listens on its own AMP port and is started normally:
 
 ```python
 AMP_PORT = 4006
 TELNET_PORTS = [4000]
 ```
 
-```bash
-evennia start --settings settings_router
-```
+## 5. Point every other instance at that port
 
-**Every other instance** points `AMP_PORT` at the Portal instance's port. That is what makes its
-Server dial there instead of expecting a Portal of its own:
+That is what makes a Server dial there instead of expecting a Portal of its own:
 
 ```python
 AMP_PORT = 4006          # the Portal instance's port, not one of ours
@@ -72,13 +79,14 @@ then fails on something obvious, rather than several instances silently fighting
 Each instance needs its own directory, because Evennia derives its database and logs from `GAME_DIR`,
 which is the working directory it was started from.
 
-## Starting a Server without a Portal
+## 6. Declare the Server-only launcher verb
 
 `evennia start` brings up a Portal too, which collides on the AMP port. `evennia istart` tells the
 Portal to stop the Server it already has — so on a shared Portal it shuts down the instance you were
 attached to. Neither is what you want.
 
-This library adds a verb that starts a Server and speaks to no Portal at all. Declare it:
+This library adds a verb that starts a Server and speaks to no Portal at all. Declare it on every
+Server-only instance:
 
 ```python
 EXTRA_LAUNCHER_COMMANDS = {
@@ -86,20 +94,26 @@ EXTRA_LAUNCHER_COMMANDS = {
 }
 ```
 
-then, from that instance's directory:
+Without the setting the verb does not resolve, and it fails silently — it falls through to Django and
+is reported as an unknown command.
+
+## 7. Start the Portal instance, then the Servers
+
+The Portal instance first. `server_start` needs a live Portal at the address it dials.
+
+```bash
+evennia start --settings settings_router
+```
+
+Then, from each Server-only instance's directory:
 
 ```bash
 evennia server_start --settings settings_shard1
 ```
 
-Without the setting the verb does not resolve, and it fails silently — it falls through to Django and
-is reported as an unknown command.
-
 **`AMP_PORT` is the launcher's control channel as well as the Server's dial target.** So `stop`,
 `reload` and `istart` run from a Server-only instance's directory all reach the *Portal instance*.
 `server_start` is the only launcher verb safe to use from one.
-
-Start the Portal instance first. `server_start` needs a live Portal at the address it dials.
 
 ## What a consumer calls
 
@@ -163,10 +177,31 @@ login screen who has not authenticated.
 | `REJECTED` | The destination would not take it, so it was put back where it was |
 | `STRANDED` | It was released, refused, and the origin would not take it back. The player has to reconnect |
 
+## Required settings
+
+| Setting | What it does | Without it |
+|---|---|---|
+| `MULTIPLEX_INSTANCE_ID` | This instance's name, as it announces itself to a Portal. Distinct per instance | `ImproperlyConfigured` when read — on a Server, at boot; on a Portal, when a player connects |
+| `MULTIPLEX_DEFAULT_INSTANCE` | Where a session goes when nothing has bound it elsewhere. The same on every instance | `ImproperlyConfigured` when read, by the same paths |
+
+`EXTRA_LAUNCHER_COMMANDS` is Evennia's, not this library's, and step 6 covers what it costs to leave
+out.
+
+## Optional settings
+
+**This library has none.** Both of its settings are required, because neither has a default that could
+be right: an instance name invented for you would collide with the next instance's, and a default
+instance guessed for you would be whichever Server attached most recently, which is the thing this
+library exists to stop.
+
 ## What is not checked for you
 
+- **That the library is in `INSTALLED_APPS`.** Leave it out and `AppConfig.ready()` never runs, so
+  nothing installs and nothing validates anything.
 - **That the required settings are set**, at boot. They raise when read, which on a Portal is when a
   player connects.
+- **That aliased instance names agree** with whatever sibling library you took them from. Nothing
+  compares them — see step 3.
 - **That a Server actually registered** — that one *is* checked. An instance whose announcement did
   not reach the Portal logs the reason and stops, rather than running unreachable. `server_start`
   reports it at the terminal.

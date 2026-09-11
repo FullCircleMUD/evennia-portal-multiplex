@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""The two settings this library reads.
+"""The two settings this library reads, and every constant it declares.
 
-An instance's name, and where traffic goes when nothing has said otherwise.
-Both are declared here rather than borrowed, so the library depends on Evennia
-and nothing else — a consumer that already names its instances aliases them::
+The settings are an instance's name, and where traffic goes when nothing has
+said otherwise. Both are named here rather than borrowed from a sibling, so a
+consumer that already names its instances aliases them rather than this library
+reaching for someone else's vocabulary::
 
     MULTIPLEX_INSTANCE_ID = MESSAGEBUS_INSTANCE_ID
     MULTIPLEX_DEFAULT_INSTANCE = SCALING_ROUTER_ID
@@ -19,6 +20,45 @@ See docs/test-plan.md § CF.
 
 SETTING_INSTANCE_ID = "MULTIPLEX_INSTANCE_ID"
 SETTING_DEFAULT_INSTANCE = "MULTIPLEX_DEFAULT_INSTANCE"
+
+#: What a move resolves to. The names describe what happened to the session,
+#: not what this library did about it — a destination that would not take the
+#: session **rejected** it, and that we then put the session back is
+#: bookkeeping the consumer has no use for. `move.py` imports them and they
+#: are read from there: `from evennia_portal_multiplex.move import MOVED`.
+MOVED = "moved"
+ALREADY_THERE = "already_there"
+NOT_ATTACHED = "not_attached"
+REJECTED = "rejected"
+STRANDED = "stranded"
+NO_SUCH_SESSION = "no_such_session"
+
+#: Where a payload lands on the session. `server_data` is on
+#: ``SESSION_SYNC_ATTRS``, so what is put there crosses with the ``PCONN``.
+#: Prefixed because the dict is Evennia's and a consumer keeps their own keys
+#: in it too.
+PAYLOAD_KEY = "multiplex_payload"
+
+#: The fields cleared on the way out and restored on the way back. All three
+#: are on ``SESSION_SYNC_ATTRS`` and all three are primary keys belonging to
+#: the Server being left: carried across, the destination believes the session
+#: is already authenticated as whatever account holds that id over there.
+IDENTITY = {"uid": None, "logged_in": False, "puid": None}
+
+#: The attribute a session's instance name is stamped on. Prefixed because a
+#: Portal session is an Evennia object and a consumer may stamp their own.
+BINDING_KEY = "_multiplex_instance"
+
+#: The key an instance's name travels under inside Evennia's ``info_dict``.
+#: Prefixed because the dict is Evennia's and a consumer may add to it too.
+INSTANCE_KEY = "multiplex_instance_id"
+
+#: How long to let a Server settle before deciding it did not come up. It has
+#: to cover a full boot *and* a refusal, because the refusal happens once the
+#: Server is up enough to have dialled its Portal — see docs/test-plan.md § ST.
+#: A guess until this has been run against live instances; too short reports a
+#: healthy Server as failed, which is worse than saying nothing.
+SETTLE_SECONDS = 10
 
 
 def _required(name, why):

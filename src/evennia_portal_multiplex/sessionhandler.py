@@ -139,6 +139,10 @@ def make_session_handler(base, registry):
             theirs. So the last message lands on a Server that has already
             dropped everything and finds nothing to do.
             """
+            # Evennia's wire constants for "no particular session" and "drop
+            # everything". This override sends Evennia's own shutdown message
+            # to each attached instance instead of the one, so it has to speak
+            # exactly what Evennia's Servers already listen for.
             from evennia.server.portal.amp import DUMMYSESSION, PDISCONNALL
 
             for instance_id in registry.attached():

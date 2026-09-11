@@ -22,13 +22,7 @@ an unknown command.
 See docs/test-plan.md § LC.
 """
 
-
-#: How long to let a Server settle before deciding it did not come up. It has
-#: to cover a full boot *and* a refusal, because the refusal happens once the
-#: Server is up enough to have dialled its Portal — see docs/test-plan.md § ST.
-#: A guess until this has been run against live instances; too short reports a
-#: healthy Server as failed, which is worse than saying nothing.
-SETTLE_SECONDS = 10
+from .config import SETTLE_SECONDS
 
 
 def _server_came_up():
@@ -46,6 +40,10 @@ def _server_came_up():
     import os
     import time
 
+    # Evennia's launcher owns where this gamedir's pidfile is and how to read
+    # it. Deriving either ourselves would be a second answer to a question
+    # Evennia already answers, and it would drift the first time Evennia moved
+    # the file. Imported here because the launcher resolves the gamedir first.
     from evennia.server import evennia_launcher
 
     time.sleep(SETTLE_SECONDS)
@@ -75,6 +73,10 @@ def server_start(*args):
     """
     import subprocess
 
+    # The twistd command line, the pidfile and the log observer are all built
+    # by Evennia's launcher for the gamedir it has just resolved. This verb
+    # reuses that rather than reinventing it, which is the whole reason it is
+    # thin enough to be worth having.
     from evennia.server import evennia_launcher
 
     from .log import portal_multiplex_log

@@ -2,6 +2,33 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-11 — logging through the extension, and clean against the standards
+
+`log.py` is three lines. `portal_multiplex_log` now binds through `evennia-logging-extension`'s
+`make_logger`, writing to the same `portalmultiplex.log` as before with the same
+`(message, level, trace)` signature — so no call site, import or test changed. The extension is
+declared in `pyproject.toml` and installs as an editable sibling checkout; `examples/requirements.txt`
+carries it above the library.
+
+What that buys is the pre-reactor window. `startup.py` logs its refusal at ERROR before it raises, and
+`AppConfig.ready()` runs before there is a reactor to defer a write to — the extension writes
+synchronously when there is none.
+
+The standards pass went with it:
+
+- `docs/interoperability.md` written in full — every sibling in `libraries/`, each naming a
+  relationship and carrying a clearance that says why it is clear.
+- `docs/installing.md` on a numbered spine, seven steps in the order a consumer does them, with
+  required and optional settings stated.
+- Every module-level constant declared in `config.py`. The documented import paths are unchanged:
+  `from evennia_portal_multiplex.move import PAYLOAD_KEY, send_session` still resolves, which matters
+  because `evennia-scaling` uses it.
+- Every Evennia import carries a comment saying why that module needs the engine.
+- `syncing.py`'s module state is `_syncing_instance_id` — lower case, because it is rebound at runtime
+  and never was a constant.
+
+118 tests, all three linters clean. Live boot validation of the new logging path is the next step.
+
 ## 2026-09-04 — proven on SSH as well
 
 A session moved server1 -> server2 -> server3 -> server1 over SSH, in one connection. SSH negotiates a

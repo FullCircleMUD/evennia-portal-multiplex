@@ -24,7 +24,7 @@ from contextlib import contextmanager
 #: something passed down: the two ends of this are Evennia's — a responder we
 #: subclass and a handler method we override — with Evennia's own code in
 #: between, so there is no argument to thread through.
-_SYNCING_FOR = None
+_syncing_instance_id = None
 
 
 @contextmanager
@@ -36,14 +36,14 @@ def syncing_for(instance_id):
     answer for one instance — including the callers that should see every
     session.
     """
-    global _SYNCING_FOR
+    global _syncing_instance_id
 
-    held = _SYNCING_FOR
-    _SYNCING_FOR = instance_id
+    held = _syncing_instance_id
+    _syncing_instance_id = instance_id
     try:
         yield
     finally:
-        _SYNCING_FOR = held
+        _syncing_instance_id = held
 
 
 def currently_syncing():
@@ -53,4 +53,4 @@ def currently_syncing():
     instance that simply holds no sessions — one means "answer with
     everything", the other means "answer with nothing".
     """
-    return _SYNCING_FOR
+    return _syncing_instance_id

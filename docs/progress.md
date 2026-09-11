@@ -2,6 +2,39 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-11 — the Portal says who attached, and every instance says it installed
+
+The library logged almost nothing on the Portal side. Two places now do, both chosen for what they
+give somebody diagnosing a fault rather than for completeness.
+
+**The registry reports an attach, and a replacement.** A first registration records that the instance
+reached this Portal. A registration that displaces a *different* connection says so instead — which is
+either a Server that restarted before the Portal noticed the old connection drop, or two Servers
+configured with the same id, where the second takes the first's sessions and leaves it attached and
+unreachable. The registry cannot tell those apart, so both lines are INFO and report rather than rule.
+Re-registering the *same* connection is silent: `record_announcement` runs on any admin message
+carrying the name, and a replacement that replaced nobody is noise in the line a reader is looking at
+during an incident. IR-10, IR-11, IR-12.
+
+**`ready()` records the install, and what the instance calls itself.** Left out of `INSTALLED_APPS` the
+library runs nothing and reports nothing, and moves to that instance quietly do nothing. This line is
+what makes an absent `portalmultiplex.log` mean *never imported* rather than *nothing to say*. The
+instance id is read defensively and only for the line — an unset setting is reported in it rather than
+becoming a boot failure, because a log line does not get to decide whether a Server starts. IN-22,
+IN-23.
+
+`docs/installing.md` now carries a *Where it logs* section: every line the library writes, and what
+each one means.
+
+**Parked: the routing fallback.** `binding.connection_for` falls back to the default instance when a
+session's own instance is not attached — per message, resolved fresh each time, with no `PCONN` sent,
+so the default Server receives traffic for a session it was never told to build. `get_all_sync_data`
+answers the same question the opposite way ("a session bound to an instance that is not attached syncs
+to nobody"). Logging it was proposed and deferred: what that fallback *should* do is the question, and
+a line describing behaviour that may change is worth nothing.
+
+123 tests, all three linters clean.
+
 ## 2026-09-11 — logging through the extension, and clean against the standards
 
 `log.py` is three lines. `portal_multiplex_log` now binds through `evennia-logging-extension`'s
@@ -27,7 +60,9 @@ The standards pass went with it:
 - `syncing.py`'s module state is `_syncing_instance_id` — lower case, because it is rebound at runtime
   and never was a constant.
 
-118 tests, all three linters clean. Live boot validation of the new logging path is the next step.
+118 tests, all three linters clean. Validated live: three instances up, a session moved
+server1 → server2 on one unbroken telnet socket, a broadcast reaching it, and the level and trace paths
+landing in `portalmultiplex.log` with no `pre-startup.log` anywhere.
 
 ## 2026-09-04 — proven on SSH as well
 

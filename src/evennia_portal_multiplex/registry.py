@@ -15,6 +15,7 @@ See docs/test-plan.md § IR.
 """
 
 from .config import get_default_instance
+from .log import portal_multiplex_log
 
 
 class InstanceRegistry:
@@ -36,9 +37,30 @@ class InstanceRegistry:
 
         Registering an instance already present replaces its entry: a Server
         that restarts reattaches on a new connection, and the old one is dead.
+
+        Both the attach and the replacement are logged, and the replacement is
+        matched on identity — an instance re-announcing down the connection it
+        already holds displaced nobody, and `record_announcement` runs on any
+        admin message carrying the name. See docs/test-plan.md § IR.
         """
         if not instance_id:
             return
+
+        held = self._connections.get(instance_id)
+        if held is None:
+            portal_multiplex_log(f"{instance_id!r} attached.")
+        elif held is not connection:
+            # Either a Server that restarted before this Portal noticed the old
+            # connection drop, or a second Server carrying the same id — which
+            # takes the first's sessions and leaves it attached and
+            # unreachable. Indistinguishable from here, so this reports it
+            # rather than ruling on it.
+            portal_multiplex_log(
+                f"{instance_id!r} attached on a new connection, replacing the "
+                f"one held. Either it restarted, or a second Server is "
+                f"configured with this id."
+            )
+
         self._connections[instance_id] = connection
 
     def forget(self, connection):

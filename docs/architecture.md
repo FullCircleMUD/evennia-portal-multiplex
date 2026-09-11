@@ -30,7 +30,7 @@ argument, which is why they test as plain data handling.
 
 | Module | Does |
 |---|---|
-| `config.py` | The two settings this library reads |
+| `config.py` | The two settings this library reads, and every constant it declares |
 | `registry.py` | Instance id → live AMP connection. No decisions, no sends |
 | `services.py` | Server side: announces this instance's name. Portal side: owns the registry, installs the recording protocol |
 | `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query, and carries out a move |
@@ -45,6 +45,7 @@ argument, which is why they test as plain data handling.
 | `amp_client.py` | The Server's side of the AMP link: runs that check on connect, and names a Portal it could not reach |
 | `launcher.py` | `evennia server_start` — starts a Server without stopping another |
 | `evennia_patch.py` | A local fix for an Evennia bug. Deletable |
+| `log.py` | Binds `portal_multiplex_log` through `evennia-logging-extension` → `portalmultiplex.log` |
 | `apps.py` | The installer. The library's only way into either process |
 
 ## Three facts about Evennia that shape everything

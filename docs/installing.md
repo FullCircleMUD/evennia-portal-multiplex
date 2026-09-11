@@ -194,6 +194,25 @@ be right: an instance name invented for you would collide with the next instance
 instance guessed for you would be whichever Server attached most recently, which is the thing this
 library exists to stop.
 
+## Where it logs
+
+Everything this library writes goes to `portalmultiplex.log`, under Evennia's `LOG_DIR` beside its
+other logs and in Evennia's own line format. One file per instance, because each instance derives its
+log directory from its own `GAME_DIR`.
+
+| Line | When |
+|---|---|
+| `Installed on '<name>'` | Every process that runs `django.setup()`, so one `evennia start` writes three |
+| `'<name>' attached` | A Server registers with this Portal |
+| `'<name>' attached on a new connection, replacing the one held` | A Server re-registered — it restarted, or a second Server carries the same id |
+| `server_start: …` | The launcher verb starting a Server |
+| `Not starting: …` | A Server refusing to start, with the reason |
+| `Could not reach the Portal at …` | The Server's AMP client could not dial; Twisted retries |
+| A move that did not simply succeed | Not attached, rejected, stranded, or an id the Portal does not hold |
+
+**An instance with no `portalmultiplex.log` never loaded the library.** The file appears at install, so
+its absence means the package was never imported — check `INSTALLED_APPS` on that instance.
+
 ## What is not checked for you
 
 - **That the library is in `INSTALLED_APPS`.** Leave it out and `AppConfig.ready()` never runs, so

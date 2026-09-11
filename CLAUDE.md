@@ -24,7 +24,7 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Working, proven on telnet, WebSocket and SSH.** 118 tests, linters clean, no uncovered cases. All four
+**Working, proven on telnet, WebSocket and SSH.** 123 tests, linters clean, no uncovered cases. All four
 processes are complete — a Server boots and registers or refuses to start, a player connects and lands
 on the default instance, a Server can ask for one of its sessions to be moved, and an admin can reach
 every player on every instance — and all four have been exercised against live instances. No

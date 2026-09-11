@@ -177,6 +177,48 @@ class TestInstanceRegistry(unittest.TestCase):
         registry.register("second", self._connection())
         self.assertEqual(registry.attached(), sorted(["third", "this-instance", "second"]))
 
+    def _log(self):
+        return mock.patch("evennia_portal_multiplex.registry.portal_multiplex_log")
+
+    def test_ir_10_a_replacement_is_logged(self):
+        """IR-10: a live entry displaced by a different connection.
+
+        Either a Server that restarted before the Portal noticed the old
+        connection drop, or two Servers sharing an id — where the second takes
+        the first's sessions and the first is left attached and unreachable.
+        The registry cannot tell them apart, so the line reports rather than
+        rules, and names the instance because that is the diagnosis.
+        """
+        registry = InstanceRegistry()
+        first, second = self._connection("first"), self._connection("second")
+        registry.register("second", first)
+        with self._log() as logged:
+            registry.register("second", second)
+        self.assertTrue(logged.called)
+        self.assertIn("second", str(logged.call_args.args[0]))
+
+    def test_ir_11_a_first_registration_is_logged(self):
+        """IR-11: the line that says this Server reached its Portal at all."""
+        registry = InstanceRegistry()
+        with self._log() as logged:
+            registry.register("second", self._connection())
+        self.assertTrue(logged.called)
+        self.assertIn("second", str(logged.call_args.args[0]))
+
+    def test_ir_12_re_registering_the_same_connection_is_not_logged(self):
+        """IR-12: re-announcing down the connection already held replaced nobody.
+
+        `record_announcement` runs on any admin message carrying the name, so
+        without the identity check this would report a replacement that never
+        happened — noise in the line a reader is looking at during an incident.
+        """
+        registry = InstanceRegistry()
+        connection = self._connection()
+        registry.register("second", connection)
+        with self._log() as logged:
+            registry.register("second", connection)
+        self.assertFalse(logged.called)
+
 
 class TestMoveCommand(unittest.TestCase):
     """MC — the move command."""
@@ -1725,6 +1767,61 @@ class TestInstallation(unittest.TestCase):
             self.assertIn("self.protocol()", source)
         finally:
             amp_client.AMPClientFactory = original
+
+    # -- the install line -----------------------------------------------
+
+    EVENNIA_DEFAULTS = {
+        "EVENNIA_PORTAL_SERVICE_CLASS": (
+            "evennia.server.portal.service.EvenniaPortalService"
+        ),
+        "EVENNIA_SERVER_SERVICE_CLASS": "evennia.server.service.EvenniaServerService",
+        "PORTAL_SESSION_HANDLER_CLASS": (
+            "evennia.server.portal.portalsessionhandler.PortalSessionHandler"
+        ),
+    }
+
+    def test_in_22_ready_logs_the_install(self):
+        """IN-22: what makes an absent portalmultiplex.log mean something.
+
+        Left out of INSTALLED_APPS none of this runs and nothing says so. One
+        line at install is what separates "never imported" from "imported and
+        had nothing to say".
+        """
+        from django.apps import apps as django_apps
+        from django.test import override_settings
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        with override_settings(
+            MULTIPLEX_INSTANCE_ID="second", **self.EVENNIA_DEFAULTS
+        ), mock.patch(
+            "evennia_portal_multiplex.log.portal_multiplex_log"
+        ) as logged:
+            config.ready()
+        self.assertTrue(logged.called)
+        self.assertIn("second", str(logged.call_args.args[0]))
+
+    def test_in_23_an_unset_instance_id_does_not_refuse_the_boot(self):
+        """IN-23: a log line does not decide whether a Server starts.
+
+        `get_instance_id` refuses an unset setting, and `ready()` does not
+        otherwise read it. Reading it here the ordinary way would turn a
+        missing setting into a boot failure — which installing.md disclaims
+        under *What is not checked for you*. The line reports it instead.
+        """
+        from django.apps import apps as django_apps
+        from django.core.exceptions import ImproperlyConfigured
+        from django.test import override_settings
+
+        config = django_apps.get_app_config("evennia_portal_multiplex")
+        with override_settings(**self.EVENNIA_DEFAULTS), mock.patch(
+            "evennia_portal_multiplex.config.get_instance_id",
+            side_effect=ImproperlyConfigured("MULTIPLEX_INSTANCE_ID is not set"),
+        ), mock.patch(
+            "evennia_portal_multiplex.log.portal_multiplex_log"
+        ) as logged:
+            config.ready()
+        self.assertTrue(logged.called)
+        self.assertIn("not set", str(logged.call_args.args[0]).lower())
 
 
 class TestPortalQuery(unittest.TestCase):

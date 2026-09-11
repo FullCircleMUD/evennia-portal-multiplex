@@ -29,6 +29,8 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         from . import amp_client, evennia_patch, services, sessionhandler
         from .registry import InstanceRegistry
 
+        self._log_install()
+
         # Not a class setting, so it does not go through _layer_over: Evennia's
         # Server service looks `amp_client.AMPClientFactory` up by name at call
         # time, and this rebinds it. **Delete this line when the upstream fix
@@ -85,6 +87,34 @@ class EvenniaPortalMultiplexConfig(AppConfig):
                 base, registry
             ),
         )
+
+    def _log_install(self):
+        """Record that this instance installed the library, and what it calls itself.
+
+        Left out of ``INSTALLED_APPS`` none of `ready()` runs and nothing
+        reports it — moves to that instance quietly do nothing. This line is
+        what makes an absent ``portalmultiplex.log`` mean *never imported*
+        rather than *imported with nothing to say*.
+
+        One line per process that runs ``django.setup()``, so an
+        ``evennia start`` writes three. It cannot say which process it is in:
+        that is a flag passed to ``_init()`` afterwards.
+
+        **The name is read defensively, and only for this line.** A missing
+        setting is reported here rather than refusing the boot — see
+        docs/test-plan.md § IN.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from .config import get_instance_id
+        from .log import portal_multiplex_log
+
+        try:
+            instance_id = repr(get_instance_id())
+        except ImproperlyConfigured:
+            instance_id = "an instance whose MULTIPLEX_INSTANCE_ID is not set"
+
+        portal_multiplex_log(f"Installed on {instance_id}.")
 
     def _layer_over(self, setting, stash, module, attribute, factory):
         """Subclass whatever class a setting names, and repoint it at ours.

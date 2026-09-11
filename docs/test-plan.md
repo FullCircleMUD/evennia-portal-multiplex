@@ -66,6 +66,22 @@ handshake arrived on.
 reconnecting instance can register its replacement before the old connection's loss is noticed. Deleting
 by name would then delete the live entry and leave the instance unreachable while it is in fact attached.
 
+**An attach is logged, and a replacement says so.** A first registration records that the instance
+attached — the line that answers *did this Server ever reach its Portal* without anyone having to
+query for it, and the first thing worth looking for when a move goes nowhere.
+
+A registration that replaces a *different* connection says that instead. Two things reach it. A Server
+that restarted and reattached before the Portal noticed the old connection drop — appropriate, and the
+ordinary case. Or two Servers configured with the same id, where the second takes the first's sessions
+and the first is left attached and unreachable, with everything typed on it going to a Server that
+never had those sessions. The registry cannot tell the two apart: both are a live entry being
+overwritten. So both lines are INFO, reporting what happened rather than ruling on it, and both name
+the instance because that name is the whole diagnosis in the second case.
+
+Re-registering the *same* connection says nothing. An instance re-announcing down the connection it
+already holds replaced nobody, and `record_announcement` runs on any admin message carrying the name —
+so a line there would be noise in exactly the place a reader is looking during an incident.
+
 | ID | Case | Test function |
 |---|---|---|
 | IR-01 | Registering a connection under an instance id makes it retrievable by that id | test_ir_01_registers_a_connection_under_its_instance_id |
@@ -77,6 +93,9 @@ by name would then delete the live entry and leave the instance unreachable whil
 | IR-07 | The default instance is retrievable by role, without a caller having to know its configured id | test_ir_07_the_default_instance_is_retrievable_by_role |
 | IR-08 | The registry can report every attached instance, so what a Portal holds can be inspected | test_ir_08_reports_every_attached_instance |
 | IR-09 | A Portal whose default instance has not attached has no default connection | test_ir_09_default_connection_is_none_when_it_is_not_attached |
+| IR-10 | A registration that replaces a different connection is logged, naming the instance | test_ir_10_a_replacement_is_logged |
+| IR-11 | A first registration is logged as an attach, naming the instance | test_ir_11_a_first_registration_is_logged |
+| IR-12 | Re-registering the same connection logs nothing: an instance re-announcing on the connection it already holds replaced no one | test_ir_12_re_registering_the_same_connection_is_not_logged |
 
 ### IA — announcing an instance's name
 
@@ -565,6 +584,23 @@ the first time they changed it.
 `announce_all` needs none of this. It writes to the Portal's own sockets and never involves a Server,
 so it already reaches every player on every instance.
 
+**`ready()` says so, once per process.** A library left out of `INSTALLED_APPS` runs none of this and
+reports nothing; the symptom is moves to that instance quietly doing nothing. One line at install is
+what makes an absent `portalmultiplex.log` mean something definite — the package was never imported, so
+it was never installed. Without it, silence covers both that and an instance that simply had nothing to
+say. The line carries this instance's name, so each log also shows what that instance thinks it is
+called: the Server-side view of the duplicate id IR-10 catches from the Portal.
+
+It runs in every process that calls `django.setup()` — the launcher, the Portal and the Server — so one
+`evennia start` writes three identical lines. `ready()` cannot say which process it is in; that
+distinction is a flag passed to `_init()` afterwards.
+
+**The name is read defensively, for the line only.** `get_instance_id()` refuses when the setting is
+unset, and `ready()` does not otherwise read it. Reading it here the ordinary way would turn a missing
+setting into a boot failure — a behavioural change, and one *What is not checked for you* in
+`installing.md` currently disclaims. A log line does not get to decide whether a Server starts, so the
+line reports the setting as unset instead.
+
 | ID | Case | Test function |
 |---|---|---|
 | IN-01 | The Portal service holds the registry it was given, for the life of the process | test_in_01_the_portal_service_holds_the_registry_it_was_given |
@@ -588,6 +624,8 @@ so it already reaches every player on every instance.
 | IN-19 | An unbound session goes to the default instance's sync, and nobody else's | test_in_19_an_unbound_session_syncs_to_the_default |
 | IN-20 | Outside a sync, every session is returned as before | test_in_20_outside_a_sync_everything_is_returned |
 | IN-21 | An instance holding no sessions is handed nothing, rather than everything | test_in_21_an_instance_with_no_sessions_gets_nothing |
+| IN-22 | `ready()` logs that the library installed, naming this instance | test_in_22_ready_logs_the_install |
+| IN-23 | An unset instance id is reported in that line rather than refusing the boot — a log line does not decide whether a Server starts | test_in_23_an_unset_instance_id_does_not_refuse_the_boot |
 
 ### QY — asking the Portal which instances are attached
 

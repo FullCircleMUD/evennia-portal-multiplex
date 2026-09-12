@@ -28,6 +28,12 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Library under test
 INSTALLED_APPS = list(INSTALLED_APPS) + ["evennia_portal_multiplex"]  # noqa: F405
 
+# Required by the library, and checked in AppConfig.ready() — so the suite
+# cannot bootstrap without them. The CF cases override these to test the
+# refusal; every other case gets a settings module that boots.
+MULTIPLEX_INSTANCE_ID = "test-instance"
+MULTIPLEX_DEFAULT_INSTANCE = "test-instance"
+
 # One database. The library owns no tables yet; when it does, this grows a
 # second alias and a router, as the siblings have.
 DATABASES = {

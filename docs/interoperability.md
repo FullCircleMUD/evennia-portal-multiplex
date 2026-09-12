@@ -132,6 +132,12 @@ arriving unauthenticated.
 **Why a session should move remains the consumer's** — see [CLAUDE.md](../CLAUDE.md). Scaling answering
 that question for FCM does not make it this library's question.
 
+**Scaling also reads `get_instance_id()` rather than naming its instances twice, and that accessor is a
+plain read.** This library refuses the boot without `MULTIPLEX_INSTANCE_ID`, so by the time anything
+runs the value is there — but app `ready()` order is `INSTALLED_APPS` order, and a caller reaching the
+accessor before this library's check has run gets an `AttributeError` rather than a named refusal. A
+sibling depending on the setting checks it in its own `check_settings()`.
+
 ## evennia-shards
 
 **No coupling.** Neither library imports the other, and nothing in either reads the other's settings.

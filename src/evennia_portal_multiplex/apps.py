@@ -34,6 +34,13 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         # Portal — so the watch reaches it lazily, inside its callable.
         import evennia
 
+        from .config import check_settings
+
+        # First, and before the install line: an instance writes a refusal or
+        # an install line and never both, so a line saying it installed means
+        # it is configured too. See docs/test-plan.md § CF.
+        check_settings()
+
         self._log_install()
 
         # Not a class setting, so it does not go through _layer_over: Evennia's
@@ -113,21 +120,13 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         ``evennia start`` writes three. It cannot say which process it is in:
         that is a flag passed to ``_init()`` afterwards.
 
-        **The name is read defensively, and only for this line.** A missing
-        setting is reported here rather than refusing the boot — see
-        docs/test-plan.md § IN.
+        **Written after `check_settings`**, so the name is read plainly — an
+        instance that reached this line has one. See docs/test-plan.md § CF.
         """
-        from django.core.exceptions import ImproperlyConfigured
-
         from .config import get_instance_id
         from .log import portal_multiplex_log
 
-        try:
-            instance_id = repr(get_instance_id())
-        except ImproperlyConfigured:
-            instance_id = "an instance whose MULTIPLEX_INSTANCE_ID is not set"
-
-        portal_multiplex_log(f"Installed on {instance_id}.")
+        portal_multiplex_log(f"Installed on {get_instance_id()!r}.")
 
     def _layer_over(self, setting, stash, module, attribute, factory):
         """Subclass whatever class a setting names, and repoint it at ours.

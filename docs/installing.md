@@ -181,8 +181,12 @@ login screen who has not authenticated.
 
 | Setting | What it does | Without it |
 |---|---|---|
-| `MULTIPLEX_INSTANCE_ID` | This instance's name, as it announces itself to a Portal. Distinct per instance | `ImproperlyConfigured` when read — on a Server, at boot; on a Portal, when a player connects |
-| `MULTIPLEX_DEFAULT_INSTANCE` | Where a session goes when nothing has bound it elsewhere. The same on every instance | `ImproperlyConfigured` when read, by the same paths |
+| `MULTIPLEX_INSTANCE_ID` | This instance's name, as it announces itself to a Portal. Distinct per instance | The instance refuses to start |
+| `MULTIPLEX_DEFAULT_INSTANCE` | Where a session goes when nothing has bound it elsewhere. The same on every instance | The instance refuses to start |
+
+Both are checked in `AppConfig.ready()`, so a missing one stops the boot rather than surfacing later —
+which for `MULTIPLEX_DEFAULT_INSTANCE` on a Portal would otherwise be the first player's connect. Both
+problems are reported in one refusal, so a settings file with two gaps takes one restart to fix, not two.
 
 `EXTRA_LAUNCHER_COMMANDS` is Evennia's, not this library's, and step 6 covers what it costs to leave
 out.
@@ -202,7 +206,8 @@ log directory from its own `GAME_DIR`.
 
 | Line | When |
 |---|---|
-| `Installed on '<name>'` | Every process that runs `django.setup()`, so one `evennia start` writes three |
+| `evennia-portal-multiplex cannot start: …` | ERROR — a required setting is missing, naming every one of them. The instance does not start |
+| `Installed on '<name>'` | Every process that runs `django.setup()`, so one `evennia start` writes three. Written only after the settings check passes, so it means started *and* configured |
 | `'<name>' attached` | A Server registers with this Portal |
 | `'<name>' attached on a new connection, replacing the one held` | A Server re-registered — it restarted, or a second Server carries the same id |
 | `server_start: …` | The launcher verb starting a Server |
@@ -214,17 +219,20 @@ log directory from its own `GAME_DIR`.
 | `'<name>' did not come back within 10s. Moving N session(s)` | WARN — the wait expired and its players went to the default |
 | `Could not move a session to '<name>' … Disconnecting it` | ERROR — the default would not take them either |
 
-**An instance with no `portalmultiplex.log` never loaded the library.** The file appears at install, so
-its absence means the package was never imported — check `INSTALLED_APPS` on that instance.
+**An instance with no `portalmultiplex.log` never loaded the library.** The file appears at install and
+a refusal writes to it too, so its absence means the package was never imported — check `INSTALLED_APPS`
+on that instance. A file whose last line is a refusal means the opposite: it loaded, and stopped.
 
 ## What is not checked for you
 
 - **That the library is in `INSTALLED_APPS`.** Leave it out and `AppConfig.ready()` never runs, so
-  nothing installs and nothing validates anything.
-- **That the required settings are set**, at boot. They raise when read, which on a Portal is when a
-  player connects.
+  nothing installs and nothing validates anything — including the settings check below.
 - **That aliased instance names agree** with whatever sibling library you took them from. Nothing
   compares them — see step 3.
+- **That `EXTRA_LAUNCHER_COMMANDS` declares the verb** on a Server-only instance. This library never
+  reads it — Evennia's launcher does — and a deployment that never starts a second Server on a shared
+  Portal legitimately does not need it, so it is not in the boot check. Step 6 covers what it costs to
+  leave out.
 - **That a Server actually registered** — that one *is* checked. An instance whose announcement did
   not reach the Portal logs the reason and stops, rather than running unreachable. `server_start`
   reports it at the terminal.

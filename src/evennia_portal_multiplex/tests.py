@@ -9,9 +9,11 @@ Discovered by Django's test runner via runtests.py at the repository root.
 """
 
 import json
+import os
 import unittest
 from unittest import mock
 
+from django.conf import settings
 from evennia.server.portal import amp as amp_module
 from evennia.utils.utils import class_from_module
 from twisted.internet import defer
@@ -100,6 +102,49 @@ def _patch_default(instance_id):
             return False
 
     return _All()
+
+
+def _read_back_logs():
+    """Everything under the suite's LOG_DIR, as one string.
+
+    The `CF` refusal cases assert delivery by reading the file back — a mocked
+    shim passes whether or not a line ever reached a file, and the whole point
+    of logging the refusal is that a daemonised Server's operator can find it.
+    """
+    text = []
+    for name in sorted(os.listdir(settings.LOG_DIR)):
+        if name.endswith(".log"):
+            with open(
+                os.path.join(settings.LOG_DIR, name), encoding="utf-8"
+            ) as handle:
+                text.append(handle.read())
+    return "\n".join(text)
+
+
+def _clear_logs():
+    """Point Evennia's writer at the suite's LOG_DIR and empty it.
+
+    The log directory is latched module-globally at the first-ever write, which
+    in a full-suite run happens under Evennia's own test scaffolding — so every
+    later line lands there and a read-back here finds nothing. Re-pointing the
+    latch and dropping the cached handles makes delivery land where these
+    settings say.
+
+    Files are truncated, never removed: a removed file leaves a cached handle
+    writing to an unlinked inode, and every later line vanishes silently.
+    """
+    from evennia.utils import logger as evennia_logger
+
+    evennia_logger._LOGDIR = settings.LOG_DIR
+    for handle in evennia_logger._LOG_FILE_HANDLES.values():
+        handle.close()
+    evennia_logger._LOG_FILE_HANDLES.clear()
+    evennia_logger._LOG_FILE_HANDLE_COUNTS.clear()
+
+    for name in os.listdir(settings.LOG_DIR):
+        if name.endswith(".log"):
+            with open(os.path.join(settings.LOG_DIR, name), "w"):
+                pass
 
 
 class TestInstanceRegistry(unittest.TestCase):
@@ -2259,28 +2304,122 @@ class TestInstallation(unittest.TestCase):
         self.assertTrue(logged.called)
         self.assertIn("second", str(logged.call_args.args[0]))
 
-    def test_in_23_an_unset_instance_id_does_not_refuse_the_boot(self):
-        """IN-23: a log line does not decide whether a Server starts.
 
-        `get_instance_id` refuses an unset setting, and `ready()` does not
-        otherwise read it. Reading it here the ordinary way would turn a
-        missing setting into a boot failure — which installing.md disclaims
-        under *What is not checked for you*. The line reports it instead.
-        """
+class TestCheckSettings(unittest.TestCase):
+    """CF — what the library refuses to boot without.
+
+    Each case unsets the one setting it is about and leaves the other valid:
+    a case that broke both at once could not tell which produced the message.
+    ``override_settings`` cannot delete a name, so an unset setting is written
+    as ``None`` — which is what `getattr(settings, name, None)` yields for a
+    consumer who declared nothing, and what the check tests for.
+    """
+
+    VALID = {
+        "MULTIPLEX_INSTANCE_ID": "shard1",
+        "MULTIPLEX_DEFAULT_INSTANCE": "router",
+    }
+
+    def check(self, **overrides):
+        """Run `check_settings()` under a complete settings module plus overrides."""
+        from django.test import override_settings
+
+        from evennia_portal_multiplex.config import check_settings
+
+        base = dict(self.VALID)
+        base.update(overrides)
+        with override_settings(**base):
+            check_settings()
+
+    def test_cf_01_a_complete_settings_module_passes(self):
+        """CF-01"""
+        self.check()
+
+    def test_cf_02_an_unset_instance_id_refuses_the_boot(self):
+        """CF-02"""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self.check(MULTIPLEX_INSTANCE_ID=None)
+        message = str(raised.exception)
+        self.assertIn("MULTIPLEX_INSTANCE_ID", message)
+        self.assertIn("distinct", message.lower())
+
+    def test_cf_03_an_unset_default_instance_refuses_the_boot(self):
+        """CF-03"""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self.check(MULTIPLEX_DEFAULT_INSTANCE=None)
+        message = str(raised.exception)
+        self.assertIn("MULTIPLEX_DEFAULT_INSTANCE", message)
+        self.assertIn("belong", message.lower())
+
+    def test_cf_04_every_problem_in_one_raise(self):
+        """CF-04: the whole list or a clean start, never one restart per setting."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self.check(MULTIPLEX_INSTANCE_ID=None, MULTIPLEX_DEFAULT_INSTANCE=None)
+        message = str(raised.exception)
+        self.assertIn("MULTIPLEX_INSTANCE_ID", message)
+        self.assertIn("MULTIPLEX_DEFAULT_INSTANCE", message)
+
+    def test_cf_05_ready_calls_check_settings(self):
+        """CF-05: the refusal is at boot, not at the first player's connect."""
+        from evennia_portal_multiplex.apps import EvenniaPortalMultiplexConfig
+
+        with mock.patch(
+            "evennia_portal_multiplex.config.check_settings"
+        ) as checked, mock.patch.object(
+            EvenniaPortalMultiplexConfig, "_log_install"
+        ), mock.patch.object(
+            EvenniaPortalMultiplexConfig, "_layer_over"
+        ), mock.patch(
+            "evennia_portal_multiplex.evennia_patch.install"
+        ):
+            EvenniaPortalMultiplexConfig.ready(mock.Mock())
+        checked.assert_called_once()
+
+    # CF-06 and CF-07 assert delivery by reading LOG_DIR back. A mocked shim
+    # passes whether or not a line ever reached a file — see the CF notes in
+    # docs/test-plan.md.
+
+    def test_cf_06_a_refusal_is_logged_to_disk_at_error(self):
+        """CF-06"""
+        from django.core.exceptions import ImproperlyConfigured
+
+        _clear_logs()
+        with self.assertRaises(ImproperlyConfigured):
+            self.check(MULTIPLEX_INSTANCE_ID=None)
+        logged = _read_back_logs()
+        self.assertIn("[ERROR]", logged)
+        self.assertIn("MULTIPLEX_INSTANCE_ID", logged)
+
+    def test_cf_07_the_log_line_and_the_exception_carry_the_same_text(self):
+        """CF-07"""
+        from django.core.exceptions import ImproperlyConfigured
+
+        _clear_logs()
+        with self.assertRaises(ImproperlyConfigured) as raised:
+            self.check(MULTIPLEX_INSTANCE_ID=None)
+        self.assertIn(str(raised.exception), _read_back_logs())
+
+    def test_cf_08_a_refusal_or_an_install_line_never_both(self):
+        """CF-08: the check runs before the install line, so only one is written."""
         from django.apps import apps as django_apps
         from django.core.exceptions import ImproperlyConfigured
         from django.test import override_settings
 
         config = django_apps.get_app_config("evennia_portal_multiplex")
-        with override_settings(**self.EVENNIA_DEFAULTS), mock.patch(
-            "evennia_portal_multiplex.config.get_instance_id",
-            side_effect=ImproperlyConfigured("MULTIPLEX_INSTANCE_ID is not set"),
-        ), mock.patch(
-            "evennia_portal_multiplex.log.portal_multiplex_log"
-        ) as logged:
-            config.ready()
-        self.assertTrue(logged.called)
-        self.assertIn("not set", str(logged.call_args.args[0]).lower())
+        with override_settings(
+            MULTIPLEX_INSTANCE_ID=None,
+            MULTIPLEX_DEFAULT_INSTANCE="router",
+            **TestInstallation.EVENNIA_DEFAULTS,
+        ), mock.patch.object(config, "_log_install") as install_line:
+            with self.assertRaises(ImproperlyConfigured):
+                config.ready()
+        install_line.assert_not_called()
 
 
 class TestPortalQuery(unittest.TestCase):

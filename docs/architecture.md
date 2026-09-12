@@ -31,7 +31,7 @@ argument, which is why they test as plain data handling.
 
 | Module | Does |
 |---|---|
-| `config.py` | The two settings this library reads, and every constant it declares |
+| `config.py` | The two settings this library reads, the boot check that refuses without them, and every constant it declares |
 | `registry.py` | Instance id → live AMP connection, or `None` for one that dropped. No decisions, no sends |
 | `services.py` | Server side: announces this instance's name. Portal side: owns the registry, installs the recording protocol |
 | `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query, and carries out a move |
@@ -98,6 +98,10 @@ Every step from starting a Server to it being reachable, and who owns each one �
 this library, **[Evennia]** for Evennia or Twisted. No gaps: this process is complete.
 
 - **[Evennia]** `django.setup()` runs during Server boot, which runs every installed app's `ready()`
+- **[library]** `ready()` checks the two required settings and refuses the boot if either is missing,
+  naming both in one message. Nothing below this runs on an instance that cannot be configured
+- **[library]** it records that the library installed, and on which instance — after the check, so an
+  instance writes a refusal or an install line and never both
 - **[library]** `ready()` installs the Evennia patch, layers our AMP client factory on top of it, and
   repoints four class settings
 - **[Evennia]** `_init()` builds the Server service from `EVENNIA_SERVER_SERVICE_CLASS`
@@ -470,12 +474,3 @@ game is down rather than one shard of it, and no further fallback is worth havin
 
   `MULTIPLEX_DEFAULT_INSTANCE` stays a single name.
 
-- **Checking the required settings at boot.** `MULTIPLEX_INSTANCE_ID` and `MULTIPLEX_DEFAULT_INSTANCE`
-  both raise when read, but they are read at first use — which on a Portal is when a player connects.
-  So a misconfigured Portal boots clean and fails on the first login. Checking them in `ready()`
-  instead would fail at boot, on the same argument as the registration check: an instance nobody can
-  reach is not started in any useful sense.
-
-  `EXTRA_LAUNCHER_COMMANDS` is not in that set. This library never reads it — Evennia's launcher
-  does — and a deployment that never starts a second Server on a shared Portal legitimately does not
-  need it. It belongs in the installation guide, not in a boot check.

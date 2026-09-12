@@ -2,6 +2,47 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-12 — an instance with no settings refuses to start
+
+The library validated its two required settings inside the accessors that read them, and nothing called
+those at boot. Every sibling with required settings does it the other way — `check_settings()` in
+`AppConfig.ready()`, one `ImproperlyConfigured` naming every problem — and this is now the same shape as
+`evennia-archive`, `evennia-scaling`, `evennia-llm-service`, `evennia-database-cascade` and `fcm-xrpl`.
+
+**The gap that mattered was `MULTIPLEX_DEFAULT_INSTANCE` on a Portal.** It is read Portal-side, in
+`binding.instance_for_session`. Left to the read, the Portal booted clean and raised on the first
+player's connect — a live deployment failing one player at a time, for a line missing from a settings
+file.
+
+**The check runs before the install line**, so an instance writes a refusal or `Installed on '<name>'`
+and never both. That makes the install line mean started *and* configured, and it retires `IN-23`, which
+had asserted the opposite: that an unset instance id was reported in the log rather than refusing the
+boot. The defensive read that case protected is gone with it.
+
+**Both accessors are now plain reads.** A required setting cannot survive the boot check to reach one,
+so a raise there would be a contract for a condition that can no longer occur — see
+[library-standards.md](../../../design/library-standards.md) § *Reading settings*.
+
+**Proven against the demo.** Three instances started and attached; a telnet login landed on the default
+instance; a live `send_session` moved that session from server1 to server2 on the same socket. Then, per
+broken settings file:
+
+```
+ImproperlyConfigured: evennia-portal-multiplex cannot start: MULTIPLEX_INSTANCE_ID is not set. …
+ImproperlyConfigured: evennia-portal-multiplex cannot start: MULTIPLEX_DEFAULT_INSTANCE is not set. …
+ImproperlyConfigured: evennia-portal-multiplex cannot start: MULTIPLEX_INSTANCE_ID … MULTIPLEX_DEFAULT_INSTANCE …
+```
+
+`evennia server_start` with a broken file refused in `init_game_directory` and nothing daemonised. The
+Server's own log carried the three refusals at ERROR with no `Installed on` line between them.
+
+**One thing left for a sibling.** `evennia-scaling` reads `get_instance_id()` from this library and
+relied on the accessor raising `ImproperlyConfigured` with the setting named; a plain read makes that an
+`AttributeError`, and app `ready()` order is `INSTALLED_APPS` order. The clause belongs in scaling's own
+`check_settings()`.
+
+155 tests, all three linters clean.
+
 ## 2026-09-11 — a session whose instance dies is no longer left typing into nothing
 
 **The bug, proven live before it was fixed.** A session was moved to server2, server2 was killed, and

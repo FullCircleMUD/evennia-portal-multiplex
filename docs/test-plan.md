@@ -17,6 +17,7 @@ Behaviour is agreed here first, before any test or code — see
 |---|---|
 | `AN` | Announcing to every player, whichever instance they are on |
 | `AR` | The AMP responder that records an announcement |
+| `CF` | Refusing to start without the settings this library needs |
 | `CP` | The Server's AMP client protocol, where the startup check runs |
 | `FC` | The Server's AMP client factory, and a Portal it could not reach |
 | `IA` | An instance announcing its name to the Portal |
@@ -41,6 +42,8 @@ The fake objects the suite needs, named and purposed.
 | Fixture | Purpose |
 |---|---|
 | `_patch_default()` | Patches the default-instance lookup in both `binding` and `registry`. Each imported the name, so each holds its own reference |
+| `_clear_logs()` | Points Evennia's writer at the suite's `LOG_DIR` and empties it, so a read-back finds what this run wrote and nothing else |
+| `_read_back_logs()` | Everything under the suite's `LOG_DIR`, as one string. Used by the `CF` cases that assert a line reached a file rather than a mock |
 
 ## Cases
 
@@ -122,10 +125,9 @@ protocol, no second round trip.
 
 The name is `MULTIPLEX_INSTANCE_ID`, read through `config.get_instance_id`.
 
-**No defensive handling around resolving it.** That lookup raises when the setting is unset, and it is
-meant to: two Servers attaching to one Portal without distinct names is not a state to continue from.
-Swallowing it here would hide the misconfiguration at the one moment the Portal is deciding who it is
-talking to, and the symptom would surface much later as sessions arriving at the wrong instance.
+**No defensive handling around resolving it.** The boot check has already refused an instance with no
+name — see § CF — so by the time a Server is announcing itself the setting is there, and a fallback
+here would be a second answer to a question already settled.
 
 **The returned dict is a copy.** Evennia's `get_info_dict` hands back the live `info_dict` off the
 service, so writing into it mutates what the service holds — the key would accumulate across calls and
@@ -603,6 +605,45 @@ almost immediately, whatever became of the Server. Its status says nothing.
 Open questions land here as `[TBD — needs discussion: …]` against the specific case they block,
 collected in this section. A case with open behaviour is still listed, but it does not pass.
 
+### CF — refusing to start without the settings this library needs
+
+Two settings, and neither has a value that could be guessed. An instance name invented for a consumer
+collides with the next instance's, and a default instance guessed for them is whichever Server attached
+most recently — which is the thing this library exists to stop. So there is nothing to fall back on and
+the honest answer is to refuse.
+
+**Boot is the only place the refusal is any use.** `MULTIPLEX_DEFAULT_INSTANCE` is read Portal-side, in
+`binding.instance_for_session`. Left to the read, a Portal starts clean and fails on the first player's
+connect — a live deployment, one player at a time, for a line missing from a settings file.
+
+**Every problem in one raise.** A consumer installing the library has two settings to declare, and
+stopping at the first turns that into fix-restart-fix-restart. A run either starts or hands back the
+whole list.
+
+**The accessors hold no validation.** Once the check is at boot, an unset setting cannot survive to
+reach an accessor, so a required accessor is a plain read and nothing else — see
+[library-standards.md](../../../design/library-standards.md) § *Reading settings*. Keeping a raise there
+as well would give the accessor a contract for a condition that can no longer occur.
+
+**The refusal is logged before it is raised, with the same text both ways.** The exception surfaces
+wherever the raise lands, which for a daemonised Server is not beside the other lines this library
+wrote. Building the message once and sending it to both channels means an operator reconciles one
+account of the refusal rather than two.
+
+**The check runs before the install line**, so an instance writes a refusal or an install line and never
+both. `Installed on '<name>'` then means started *and* configured, which is what makes it worth reading.
+
+| ID | Case | Test function |
+|---|---|---|
+| CF-01 | A settings module declaring both passes — `check_settings()` returns without raising | test_cf_01_a_complete_settings_module_passes |
+| CF-02 | An unset `MULTIPLEX_INSTANCE_ID` raises, and the message says instances sharing a Portal need distinct names | test_cf_02_an_unset_instance_id_refuses_the_boot |
+| CF-03 | An unset `MULTIPLEX_DEFAULT_INSTANCE` raises, and the message says a session nothing has moved still has to belong somewhere | test_cf_03_an_unset_default_instance_refuses_the_boot |
+| CF-04 | Both unset produce one exception naming both — the whole list or a clean start, never one restart per setting | test_cf_04_every_problem_in_one_raise |
+| CF-05 | `AppConfig.ready()` calls `check_settings()`, so the refusal is at boot rather than at the first player's connect | test_cf_05_ready_calls_check_settings |
+| CF-06 | The refusal is logged at ERROR before the raise — asserted by reading the file back, never by mocking the shim | test_cf_06_a_refusal_is_logged_to_disk_at_error |
+| CF-07 | The log line and the exception carry the same text — one message, built once, sent to both channels | test_cf_07_the_log_line_and_the_exception_carry_the_same_text |
+| CF-08 | `ready()` checks before it logs the install, so an instance writes a refusal or an install line and never both | test_cf_08_a_refusal_or_an_install_line_never_both |
+
 ### IN — installation
 
 What makes any of the preceding sections run. Nothing above this imports anything else in the library:
@@ -694,11 +735,11 @@ It runs in every process that calls `django.setup()` — the launcher, the Porta
 `evennia start` writes three identical lines. `ready()` cannot say which process it is in; that
 distinction is a flag passed to `_init()` afterwards.
 
-**The name is read defensively, for the line only.** `get_instance_id()` refuses when the setting is
-unset, and `ready()` does not otherwise read it. Reading it here the ordinary way would turn a missing
-setting into a boot failure — a behavioural change, and one *What is not checked for you* in
-`installing.md` currently disclaims. A log line does not get to decide whether a Server starts, so the
-line reports the setting as unset instead.
+**The line is written after `check_settings()`**, so it can read the name plainly: an instance that got
+this far has one. An instance that did not writes the refusal instead, and never both — see § CF.
+
+`IN-23` is retired. It asserted that an unset instance id was reported in this line rather than refusing
+the boot. The boot check now refuses it first, so the line it described cannot be reached.
 
 | ID | Case | Test function |
 |---|---|---|
@@ -724,7 +765,6 @@ line reports the setting as unset instead.
 | IN-20 | Outside a sync, every session is returned as before | test_in_20_outside_a_sync_everything_is_returned |
 | IN-21 | An instance holding no sessions is handed nothing, rather than everything | test_in_21_an_instance_with_no_sessions_gets_nothing |
 | IN-22 | `ready()` logs that the library installed, naming this instance | test_in_22_ready_logs_the_install |
-| IN-23 | An unset instance id is reported in that line rather than refusing the boot — a log line does not decide whether a Server starts | test_in_23_an_unset_instance_id_does_not_refuse_the_boot |
 
 ### QY — asking the Portal which instances are attached
 

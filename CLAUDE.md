@@ -24,7 +24,7 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Working, proven on telnet, WebSocket and SSH.** 148 tests, linters clean, no uncovered cases. All five
+**Working, proven on telnet, WebSocket and SSH.** 155 tests, linters clean, no uncovered cases. All five
 processes are complete — a Server boots and registers or refuses to start, a player connects and lands
 on the default instance, a Server can ask for one of its sessions to be moved, and an admin can reach
 every player on every instance — and all four have been exercised against live instances. No
@@ -137,7 +137,7 @@ evennia-portal-multiplex/
 │   └── evennia_portal_multiplex/    # library code (src layout)
 │       ├── __init__.py
 │       ├── apps.py                 # AppConfig — the only way into either process
-│       ├── config.py                # the two settings, and every constant
+│       ├── config.py                # the two settings, the boot check, and every constant
 │       ├── registry.py              # instance id -> live AMP connection, or None if dropped
 │       ├── services.py              # the Server and Portal service overrides
 │       ├── amp.py                   # the Portal's AMP protocol

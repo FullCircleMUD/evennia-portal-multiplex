@@ -53,6 +53,34 @@ BINDING_KEY = "_multiplex_instance"
 #: Prefixed because the dict is Evennia's and a consumer may add to it too.
 INSTANCE_KEY = "multiplex_instance_id"
 
+#: How long to wait for a dropped instance before giving up on it and moving
+#: its sessions to the default. Evennia's AMP client redials at one second
+#: growing to a ceiling of ten, so anything transient — a reload, a crash under
+#: a process manager, a network blip — is back inside this. See § RC.
+RECONNECT_WAIT_SECONDS = 10
+
+#: How often to look at the registry entry while waiting. The Portal cannot see
+#: the Server's redial attempts, so it watches the entry those attempts change.
+RECONNECT_POLL_SECONDS = 1
+
+#: What a player is told, in order: their connection went, we are waiting, and
+#: then one of the two outcomes. Nothing about registries or redialling — none
+#: of that is theirs to know.
+RECONNECT_LOST_MESSAGE = (
+    "Your connection to the game server has been lost. Reconnecting..."
+)
+RECONNECT_RESTORED_MESSAGE = "Reconnected."
+RECONNECT_TIMED_OUT_MESSAGE = (
+    "Could not reconnect you. Moving you to the default server."
+)
+
+#: When the default will not take them either. Their own instance is gone and
+#: the default cannot build them a session, so the game is down rather than one
+#: shard of it — there is no further fallback worth having at that depth.
+RECONNECT_NOWHERE_MESSAGE = (
+    "The game is unreachable. Disconnecting you — please reconnect shortly."
+)
+
 #: How long to let a Server settle before deciding it did not come up. It has
 #: to cover a full boot *and* a refusal, because the refusal happens once the
 #: Server is up enough to have dialled its Portal — see docs/test-plan.md § ST.

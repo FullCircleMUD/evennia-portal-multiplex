@@ -7,7 +7,7 @@ index new ones as they are written.
 
 | Document | What it covers |
 |---|---|
-| [architecture.md](architecture.md) | The four processes the library carries out — booting a Server, a player connecting, moving a session, announcing to everyone — each as a step list before the prose, plus which module does what and what is not designed yet. **Start here** |
+| [architecture.md](architecture.md) | The five processes the library carries out — booting a Server, a player connecting, moving a session, announcing to everyone, and an instance dropping out from under its players — each as a step list before the prose, plus which module does what and what is not designed yet. **Start here** |
 
 ## Process and discipline
 

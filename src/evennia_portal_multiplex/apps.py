@@ -27,7 +27,12 @@ class EvenniaPortalMultiplexConfig(AppConfig):
 
     def ready(self):
         from . import amp_client, evennia_patch, services, sessionhandler
+        from .reconnect import ReconnectWatch
         from .registry import InstanceRegistry
+
+        # The Portal's live session handler, which only exists in a running
+        # Portal — so the watch reaches it lazily, inside its callable.
+        import evennia
 
         self._log_install()
 
@@ -54,6 +59,14 @@ class EvenniaPortalMultiplexConfig(AppConfig):
         # be recorded into while the handler consulted an empty one, so every
         # session would route to the default and nothing would say so.
         registry = InstanceRegistry()
+
+        # The watch needs every session the Portal holds, to tell all of a
+        # dropped instance's players together. Passed as a callable rather than
+        # the handler itself: the handler does not exist yet here, and the
+        # answer has to be current at the moment it is asked, not at boot.
+        watch = ReconnectWatch(
+            registry, lambda: list(evennia.PORTAL_SESSION_HANDLER.values())
+        )
 
         self._layer_over(
             setting="EVENNIA_PORTAL_SERVICE_CLASS",
@@ -84,7 +97,7 @@ class EvenniaPortalMultiplexConfig(AppConfig):
             module=sessionhandler,
             attribute="MultiplexPortalSessionHandler",
             factory=lambda base: sessionhandler.make_session_handler(
-                base, registry
+                base, registry, watch
             ),
         )
 

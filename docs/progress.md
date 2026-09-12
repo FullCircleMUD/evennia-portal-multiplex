@@ -2,6 +2,81 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-09-11 — a session whose instance dies is no longer left typing into nothing
+
+**The bug, proven live before it was fixed.** A session was moved to server2, server2 was killed, and
+three commands were typed. The player saw nothing. server1 logged nothing. The Portal logged nothing.
+The socket stayed open and healthy and the prompt never answered again.
+
+`binding.connection_for` ended in `or registry.default_connection()`, so a session whose instance had
+gone had its traffic sent to the default instead. The default was never told that session existed — the
+move sends `PDISCONN`/`PCONN`, and a fallback sends neither — so it discarded every message without a
+word. The code read as a recovery path and recovered nothing.
+
+**What the registry was throwing away.** `forget()` deleted the instance's name, which made a dead
+shard indistinguishable from a typo. Both surfaced as `None`. The name now stays, mapped to nothing, and
+`is_known` answers the other half: an unknown name still falls back to the default, because that is
+reasonable for a name nobody ever attached under, while a dropped one does not.
+
+**Why there is a wait rather than an immediate decision.** Evennia's `AMPClientFactory` is a
+`ReconnectingClientFactory` with `initialDelay` 1, `factor` 1.5 and `maxDelay` raised to 10 in its
+`__init__`, retrying indefinitely. So a reload, a crash under a process manager or a network blip is
+back inside ten seconds and only a dead machine stays gone. Acting at once would fire on every routine
+shard restart, and telling the player anything final would be wrong almost every time.
+
+The Portal cannot see those redial attempts — they happen at the other end — so it polls its own
+registry entry once a second for ten. One wait per instance: a shard with forty players drops once, and
+a command arriving mid-wait joins it rather than starting another.
+
+**What the player is told, and nothing about our mechanism:** their connection is lost and is being
+reconnected; then either it is back, or they are being moved. On the timeout each session is moved
+individually, and one that the default will not take is told the game is unreachable and disconnected —
+at that depth the game is down rather than one shard of it, and no further fallback is worth having.
+
+**The move needed two guards, not a second function.** `move_session`'s first act is `PDISCONN` to the
+origin, and here the origin is what died — so there is nothing to send it down and nothing to send it
+to, that Server's session having gone with the process. It is skipped. The rollback is skipped for the
+same reason and resolves to `STRANDED`, which already means *on no instance*. Nothing about a move
+between two live instances changed.
+
+`CLAUDE.md`'s *Why a session should move* now carries its one exception. The library moving a session
+uninvited is error handling rather than policy, and no outcome is returned to anyone because nobody
+asked.
+
+**The first live run crashed, and 148 green tests had not noticed.** `_tell` called `session.msg()`,
+and a Portal session is a protocol — `TelnetProtocol` has no such method. The suite's sessions were bare
+`mock.Mock()`, which answer to any attribute you invent, so the wrong method name passed everywhere and
+raised in the Portal. The tests were fixed first, with a `spec_set` session carrying only what a real
+one has, confirmed to reproduce the crash, and only then the code changed to
+`data_out(text=[[message], {}])` — the shape Evennia's own `announce_all` builds.
+
+**Both paths then proven live.** A session on server2, server2 killed:
+
+```
+Your connection to the game server has been lost. Reconnecting...
+Reconnected.
+INSTANCE=server2          # same socket, never reconnected, play carried on
+```
+
+And with server2 left dead:
+
+```
+Your connection to the game server has been lost. Reconnecting...
+Could not reconnect you. Moving you to the default server.
+ Welcome to Server1
+INSTANCE=server1
+```
+
+The Portal's own log across both:
+
+```
+'server2' has dropped and 1 session(s) are waiting for it. Holding them for 10s...
+'server2' did not come back within 10s. Moving 1 session(s) to 'server1'.   [WARN]
+'server2' is back; its sessions resume.
+```
+
+148 tests, all three linters clean.
+
 ## 2026-09-11 — the Portal says who attached, and every instance says it installed
 
 The library logged almost nothing on the Portal side. Two places now do, both chosen for what they

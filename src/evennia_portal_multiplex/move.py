@@ -143,8 +143,14 @@ def move_session(registry, session, instance_id):
     # Release. Sent directly rather than through sessionhandler.disconnect(),
     # which would also drop the session from the Portal's handler and close the
     # transport — the one thing a move must not do.
-    with sending_to(origin):
-        origin.send_AdminPortal2Server(session, operation=PDISCONN)
+    #
+    # An origin that is already gone is not asked. `PDISCONN` tells a Server to
+    # drop a session of its own and travels over the AMP link, so with no
+    # connection there is nothing to send it down and nothing to send it to —
+    # that Server's session went with the process. See docs/test-plan.md § MV.
+    if origin is not None:
+        with sending_to(origin):
+            origin.send_AdminPortal2Server(session, operation=PDISCONN)
 
     built = _build_at(session, destination, instance_id, IDENTITY)
     built.addCallback(lambda _result: (True, MOVED))
@@ -190,7 +196,15 @@ def _put_back(session, origin, origin_instance, identity, failure):
     This is Evennia's own reload, applied to one session — when a Server
     reconnects, the Portal hands back every session's sync data and they come
     back logged in and re-puppeted.
+
+    **An origin that was already gone is not rebuilt at**, because there is
+    nothing there to rebuild at. Reaching for it would raise into whatever asked
+    for the move — on § RC's timeout path, the poll driving the wait. The
+    session is on no instance, which is what `STRANDED` says.
     """
+    if origin is None:
+        return _stranded(failure)
+
     portal_multiplex_log(
         f"{origin_instance!r} released a session the destination would not "
         f"take ({failure.getErrorMessage()}). Putting it back."

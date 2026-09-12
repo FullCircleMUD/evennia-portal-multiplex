@@ -74,10 +74,14 @@ class InstanceRegistry:
 
         So the match is on identity: a connection that has already been replaced
         is no longer anybody's, and its late notification does nothing.
+
+        **The name stays, mapped to nothing.** Deleting it would throw away the
+        fact that this instance was here, which is what lets routing tell a
+        dropped shard from a typo — see docs/test-plan.md § IR.
         """
         for instance_id, registered in list(self._connections.items()):
             if registered is connection:
-                del self._connections[instance_id]
+                self._connections[instance_id] = None
 
     def connection_for(self, instance_id):
         """The connection reaching ``instance_id``, or ``None`` if not attached.
@@ -86,8 +90,21 @@ class InstanceRegistry:
         things from a miss: routing a session falls back, while moving one to a
         named instance must refuse. Neither is served by a single choice made
         here.
+
+        ``None`` covers both a name that dropped and a name never held — see
+        `is_known` for the other half.
         """
         return self._connections.get(instance_id)
+
+    def is_known(self, instance_id):
+        """Whether this instance has ever attached to this Portal.
+
+        The half `connection_for` cannot answer. A name it has never held is a
+        typo or an instance that has not booted; a name that dropped has
+        sessions bound to it and belongs somewhere specific. See
+        docs/test-plan.md § IR.
+        """
+        return instance_id in self._connections
 
     def default_connection(self):
         """The connection reaching the default instance, or ``None``.
@@ -100,10 +117,20 @@ class InstanceRegistry:
         return self.connection_for(get_default_instance())
 
     def attached(self):
-        """Every instance id currently attached, sorted.
+        """Every instance id currently reachable, sorted.
 
         So what a Portal is holding can be inspected — from a log line, a
         diagnostic command, or a test. Sorted because an unstable order makes
         two readings of the same state look like a change.
+
+        **Reachable, not merely present.** A dropped instance keeps its name in
+        the mapping, and both callers — the startup check and the registry
+        query — are asking whether an instance can be spoken to. Reporting a
+        name with no connection would have a Server confirm its own
+        registration against an entry that reaches nobody.
         """
-        return sorted(self._connections)
+        return sorted(
+            instance_id
+            for instance_id, connection in self._connections.items()
+            if connection is not None
+        )

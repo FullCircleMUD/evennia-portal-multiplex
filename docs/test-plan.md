@@ -27,6 +27,7 @@ Behaviour is agreed here first, before any test or code — see
 | `MV` | Moving a session between instances |
 | `PT` | A local patch for an Evennia bug |
 | `QY` | Asking the Portal about its state |
+| `RC` | A command for an instance that dropped — the wait, and what the player is told |
 | `RT` | Routing one send to one instance |
 | `SR` | An instance checking its own registration |
 | `ST` | The startup check that acts on it |
@@ -66,6 +67,15 @@ handshake arrived on.
 reconnecting instance can register its replacement before the old connection's loss is noticed. Deleting
 by name would then delete the live entry and leave the instance unreachable while it is in fact attached.
 
+**A dropped instance keeps its name, mapped to nothing.** Deleting the name throws away the fact the
+callers need: *this instance was here*. An absent name and a dropped one are different situations. An
+absent name is a typo, or an instance that has never booted — a session's traffic going to the default
+is reasonable. A name that dropped has sessions bound to it, and the default is not a substitute for
+where they belong. `connection_for` answers `None` to both, so `is_known` answers the other half.
+
+`attached()` therefore means *names with a live connection*, not *names in the mapping* — the startup
+check and the registry query both ask it whether an instance can be reached, and a dropped one cannot.
+
 **An attach is logged, and a replacement says so.** A first registration records that the instance
 attached — the line that answers *did this Server ever reach its Portal* without anyone having to
 query for it, and the first thing worth looking for when a move goes nowhere.
@@ -96,6 +106,11 @@ so a line there would be noise in exactly the place a reader is looking during a
 | IR-10 | A registration that replaces a different connection is logged, naming the instance | test_ir_10_a_replacement_is_logged |
 | IR-11 | A first registration is logged as an attach, naming the instance | test_ir_11_a_first_registration_is_logged |
 | IR-12 | Re-registering the same connection logs nothing: an instance re-announcing on the connection it already holds replaced no one | test_ir_12_re_registering_the_same_connection_is_not_logged |
+| IR-13 | A dropped connection leaves the instance's name in the mapping with nothing against it, rather than removing the name | test_ir_13_a_dropped_instance_keeps_its_name |
+| IR-14 | An instance that dropped is distinguishable from one that was never attached, which is what lets routing treat them differently | test_ir_14_a_dropped_instance_is_distinguishable_from_an_unknown_one |
+| IR-15 | An instance that reattaches after dropping is reachable again through the same name | test_ir_15_a_dropped_instance_can_reattach |
+| IR-16 | `attached()` reports only instances with a live connection, so a dropped one is not claimed as present | test_ir_16_attached_excludes_a_dropped_instance |
+| IR-17 | A stale disconnect still cannot clear the entry that replaced it, now that the entry survives the drop | test_ir_17_a_stale_disconnect_cannot_clear_its_replacement |
 
 ### IA — announcing an instance's name
 
@@ -240,6 +255,14 @@ noticing. The lookup that costs is a dict access against a message that has alre
 names whichever Server attached most recently, so a player connecting to the default instance while an instance is
 starting would be handed to the instance. The default has to be a decision rather than a leftover.
 
+**The fallback applies to an unknown instance, not to one that dropped.** A name the registry has never
+held is a typo or an instance that has not booted, and the default is a reasonable answer. A name that
+dropped has sessions bound to it that belong somewhere specific, and the default is not that place —
+sending their traffic there reaches a Server that was never told those sessions exist, which discards
+it without a word. Proven live: three commands to a dropped instance produced nothing for the player
+and nothing in any log. So a dropped instance resolves to no connection at all, and § RC decides what
+happens to the session.
+
 **The binding and the fallback come from the same place.** Asking "where is this session" and asking
 "where does this session's traffic go" must give one answer. The spike had them reading different
 variables, and they agreed only for as long as both were maintained — when one stopped being written,
@@ -251,8 +274,75 @@ Nothing failed; the two questions simply diverged. Both resolve through the regi
 | SB-01 | A session with no binding belongs to the default instance | test_sb_01_an_unbound_session_belongs_to_the_default |
 | SB-02 | Binding a session to an instance is what it then belongs to | test_sb_02_a_bound_session_belongs_where_it_was_bound |
 | SB-03 | The binding is stored as a name, so a reconnecting instance is followed rather than a dead connection held | test_sb_03_follows_an_instance_that_reconnects |
-| SB-04 | A session bound to an instance that is not attached falls back to the default instance rather than to nothing | test_sb_04_falls_back_to_the_default_when_not_attached |
+| SB-04 | A session bound to an instance the registry has never held falls back to the default rather than to nothing — a name nobody has attached under is a typo, not a home | test_sb_04_falls_back_to_the_default_when_not_attached |
 | SB-05 | Binding one session leaves every other session's binding alone | test_sb_05_binding_one_session_leaves_others_alone |
+| SB-06 | A session bound to an instance that dropped resolves to no connection, rather than to the default | test_sb_06_a_dropped_instance_does_not_fall_back |
+
+### RC — a command for an instance that dropped
+
+**The trigger is a command arriving, not the connection going.** Nothing is being processed at the
+moment a connection drops, so there is nothing to decide then. The decision is needed when a player
+sends a command and the instance it belongs to has a registry entry with no connection against it.
+
+**A dropped connection does not mean the Server is gone.** Evennia's `AMPClientFactory` is a
+`ReconnectingClientFactory` and redials on its own — `initialDelay` 1s, `factor` 1.5, `maxDelay`
+raised to 10s in its `__init__`, retrying indefinitely. So a reload, a crash under a process manager,
+or a network blip is back within one to ten seconds, and only a dead machine stays gone. That is why
+the wait exists rather than acting immediately: most of the time the instance returns before the
+player has finished reading.
+
+**Ten seconds, polled once a second.** The Portal cannot see the Server's redial attempts — those
+happen at the other end — so it watches its own registry entry instead, which is what actually tells
+it whether the instance is reachable.
+
+**The command is dropped, not redirected.** Sending it to the default reaches a Server that was never
+told this session exists and discards it silently, so redirecting achieves nothing the player can
+perceive while making the code read as a recovery path.
+
+**Three things the player is told, and nothing about our mechanism.** Their connection is lost; it is
+being reconnected; and then either it is back, or the wait timed out and they are being moved. They do
+not need to know which process is redialling or how a registry works.
+
+**One wait per instance, not per session.** A shard with forty players on it drops once, not forty
+times. A later command for the same instance while a wait is running joins it rather than starting a
+second, and does not repeat the first message.
+
+**A session the default will not take is disconnected, and that is the end of it.** Its own instance is
+gone and the default is attached but cannot build it a session, which means the game is down rather
+than one shard of it. There is no further fallback worth having at that depth: the player is told and
+their connection is closed, and whoever restarts the game brings them back. Each session is handled on
+its own, so one failing does not abandon the rest of the batch.
+
+**On timeout the session is moved for real.** Not routed — `PCONN`, through the same path
+`send_session` uses, so the destination builds a session and the player lands on the default's login
+flow. Routing alone would leave them exactly as silent as before. This is the library forming an
+opinion about *why* a session moves, which `CLAUDE.md` currently places out of scope; that section
+changes with this.
+
+**What each of the four session messages does.** `data_in` is the player's command and the only one
+with anyone to answer. `sync` and `disconnect` are the Portal talking about a session, not to it, so
+they are dropped without comment. `connect` cannot reach this at all — a new session is unbound and
+resolves to the default.
+
+| ID | Case | Test function |
+|---|---|---|
+| RC-01 | A command for an instance with no connection is not sent anywhere | test_rc_01_the_command_is_not_sent_anywhere |
+| RC-02 | The player is told their connection is lost and is being reconnected | test_rc_02_the_player_is_told_the_connection_is_lost |
+| RC-03 | The registry entry is polled once a second while the wait runs | test_rc_03_the_registry_entry_is_polled_once_a_second |
+| RC-04 | An instance that reattaches during the wait ends it, and the player is told they are reconnected | test_rc_04_a_reattach_during_the_wait_ends_it |
+| RC-05 | Play resumes on its own after a reconnection, because the binding was never changed | test_rc_05_play_resumes_after_a_reattach |
+| RC-06 | An instance still unreachable after ten seconds ends the wait, and the player is told they are being moved | test_rc_06_a_timeout_ends_the_wait_and_tells_the_player |
+| RC-07 | The timeout moves the session to the default for real, with a `PCONN`, rather than routing its traffic there | test_rc_07_the_timeout_moves_the_session_for_real |
+| RC-08 | One wait per instance: a second command during the wait joins it rather than starting another | test_rc_08_a_second_command_joins_the_running_wait |
+| RC-09 | A second command during the wait does not repeat the message the player has already had | test_rc_09_a_second_command_does_not_repeat_the_message |
+| RC-10 | Every session bound to the dropped instance is told, not only the one whose command arrived | test_rc_10_every_session_on_the_instance_is_told |
+| RC-11 | Every session bound to the dropped instance is moved on timeout, not only the one whose command arrived | test_rc_11_every_session_on_the_instance_is_moved |
+| RC-12 | A command for an instance the registry has never held is routed to the default as before, and starts no wait | test_rc_12_an_unknown_instance_starts_no_wait |
+| RC-13 | `sync` and `disconnect` for a session on a dropped instance are dropped silently — the Portal talking about a session has nobody to answer | test_rc_13_sync_and_disconnect_on_a_dropped_instance_are_silent |
+| RC-14 | The drop is logged for the operator, naming the instance and how many sessions are waiting | test_rc_14_the_drop_is_logged_for_the_operator |
+| RC-15 | The outcome is logged — reconnected, or moved on timeout | test_rc_15_the_outcome_is_logged |
+| RC-16 | A session the default will not take is told so and disconnected. Its own instance is gone and the default cannot build it one, so there is nothing left to fall back to | test_rc_16_a_session_the_default_will_not_take_is_disconnected |
+| RC-17 | One session failing that way does not abandon the others in the same batch | test_rc_17_one_failure_does_not_abandon_the_batch |
 
 ### MV — moving a session between instances
 
@@ -327,6 +417,13 @@ their logic worth surfacing rather than a quiet success.
 **A rollback that also fails is logged and left.** Both Servers unreachable in the same instant is a
 different failure, and there is nowhere left to put the session. The player reconnects.
 
+**An origin that is already gone is not asked to release.** `PDISCONN` tells a Server to drop a session
+of its own, and it travels over the AMP link — so with no connection there is nothing to send it down,
+and nothing to send it to: the Server that held the session went with the process, and its session went
+with it. So the release is skipped rather than attempted, and the same holds for the rollback, which has
+no origin to rebuild at. This is the path § RC reaches on timeout, where nobody called `send_session`
+and no outcome is returned to anyone — the log and the player are the only audiences.
+
 | ID | Case | Test function |
 |---|---|---|
 | MV-01 | The instance being left is sent `PDISCONN` for that session | test_mv_01_the_instance_being_left_is_released |
@@ -341,6 +438,8 @@ different failure, and there is nowhere left to put the session. The player reco
 | MV-10 | A destination that fails to build puts the session back on the origin, with the identity it had | test_mv_10_a_failed_build_puts_the_session_back |
 | MV-11 | The rollback sends nothing to the destination, which never built anything to release | test_mv_11_the_rollback_leaves_the_destination_alone |
 | MV-12 | A rollback that also fails is logged, and the session is left where it is | test_mv_12_a_failed_rollback_is_logged |
+| MV-13 | An origin that is no longer attached is not sent a release, and the move proceeds to build at the destination | test_mv_13_a_gone_origin_is_not_asked_to_release |
+| MV-14 | A build that fails with no origin to return to is left alone rather than rebuilt, so nothing raises into the caller | test_mv_14_a_failed_build_with_no_origin_is_left_alone |
 
 ### MC — the move command
 

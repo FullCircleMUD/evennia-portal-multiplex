@@ -16,7 +16,7 @@ Nothing is dropped, nothing renegotiates, and it works the same whatever protoco
 
 ## Status
 
-**Working, proven live.** 123 tests, and run against live instances: three Servers behind one Portal,
+**Working, proven live.** 148 tests, and run against live instances: three Servers behind one Portal,
 with a session moved between them repeatedly on one unbroken connection — over telnet, WebSocket and
 SSH alike, and with no protocol-specific code for any of them. A Server registers with its Portal on connect
 and refuses to start if that did not land; a player connecting lands on the default

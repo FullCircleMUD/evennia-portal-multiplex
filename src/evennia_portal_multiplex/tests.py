@@ -34,6 +34,16 @@ from evennia_portal_multiplex.query import (
     query_registry,
 )
 from evennia_portal_multiplex.evennia_patch import install, make_patched_factory
+from evennia_portal_multiplex.config import (
+    BINDING_KEY,
+    RECONNECT_LOST_MESSAGE,
+    RECONNECT_NOWHERE_MESSAGE,
+    RECONNECT_POLL_SECONDS,
+    RECONNECT_RESTORED_MESSAGE,
+    RECONNECT_TIMED_OUT_MESSAGE,
+    RECONNECT_WAIT_SECONDS,
+)
+from evennia_portal_multiplex.reconnect import ReconnectWatch
 from evennia_portal_multiplex.registry import InstanceRegistry
 from evennia_portal_multiplex.startup import NotRegistered, check_registration
 from evennia_portal_multiplex.routing import sending_to
@@ -60,35 +70,36 @@ from evennia_portal_multiplex.move import (
 )
 
 
+#: Every module that imported `get_default_instance` and so holds its own
+#: reference. `binding` answers "which instance does this session belong to",
+#: `registry` answers "which connection is the default", and `reconnect` answers
+#: "where do these sessions go when their instance does not come back".
+#: Patching one leaves the others reading real settings.
+_DEFAULT_INSTANCE_READERS = ("binding", "registry", "reconnect")
+
+
 def _patch_default(instance_id):
-    """Patch every module that resolves the default instance.
+    """Patch every module that resolves the default instance."""
+    patches = [
+        mock.patch(
+            f"evennia_portal_multiplex.{module}.get_default_instance",
+            return_value=instance_id,
+        )
+        for module in _DEFAULT_INSTANCE_READERS
+    ]
 
-    `binding` resolves it to answer "which instance does this session belong
-    to"; `registry` resolves it to answer "which connection is the default".
-    Both imported the name, so each holds its own reference — patching one
-    leaves the other reading real settings.
-    """
-    binding_patch = mock.patch(
-        "evennia_portal_multiplex.binding.get_default_instance",
-        return_value=instance_id,
-    )
-    registry_patch = mock.patch(
-        "evennia_portal_multiplex.registry.get_default_instance",
-        return_value=instance_id,
-    )
-
-    class _Both:
+    class _All:
         def __enter__(self):
-            binding_patch.start()
-            registry_patch.start()
+            for patch in patches:
+                patch.start()
             return self
 
         def __exit__(self, *exc):
-            registry_patch.stop()
-            binding_patch.stop()
+            for patch in reversed(patches):
+                patch.stop()
             return False
 
-    return _Both()
+    return _All()
 
 
 class TestInstanceRegistry(unittest.TestCase):
@@ -205,6 +216,67 @@ class TestInstanceRegistry(unittest.TestCase):
         self.assertTrue(logged.called)
         self.assertIn("second", str(logged.call_args.args[0]))
 
+    def test_ir_13_a_dropped_instance_keeps_its_name(self):
+        """IR-13: the name survives the drop, mapped to nothing.
+
+        Deleting it throws away the fact routing needs — that this instance
+        was here — and makes a dead shard look like a typo.
+        """
+        registry = InstanceRegistry()
+        connection = self._connection()
+        registry.register("second", connection)
+        registry.forget(connection)
+        self.assertIsNone(registry.connection_for("second"))
+        self.assertTrue(registry.is_known("second"))
+
+    def test_ir_14_a_dropped_instance_is_distinguishable_from_an_unknown_one(self):
+        """IR-14: what lets routing treat the two differently."""
+        registry = InstanceRegistry()
+        connection = self._connection()
+        registry.register("second", connection)
+        registry.forget(connection)
+        self.assertTrue(registry.is_known("second"))
+        self.assertFalse(registry.is_known("never-attached"))
+
+    def test_ir_15_a_dropped_instance_can_reattach(self):
+        """IR-15: the ordinary case — a Server restarts and comes back."""
+        registry = InstanceRegistry()
+        first = self._connection("first")
+        registry.register("second", first)
+        registry.forget(first)
+        second = self._connection("second")
+        registry.register("second", second)
+        self.assertIs(registry.connection_for("second"), second)
+        self.assertEqual(registry.attached(), ["second"])
+
+    def test_ir_16_attached_excludes_a_dropped_instance(self):
+        """IR-16: the startup check and the registry query both ask this.
+
+        Both mean "can this instance be reached". A dropped name in the
+        mapping must not be reported as present, or a Server would confirm its
+        own registration against an entry with no connection.
+        """
+        registry = InstanceRegistry()
+        live, dead = self._connection("live"), self._connection("dead")
+        registry.register("second", live)
+        registry.register("third", dead)
+        registry.forget(dead)
+        self.assertEqual(registry.attached(), ["second"])
+
+    def test_ir_17_a_stale_disconnect_cannot_clear_its_replacement(self):
+        """IR-17: IR-05's guarantee, now that entries outlive the drop.
+
+        A reconnecting instance can register its replacement before the old
+        connection's loss is noticed. The late notification must not null the
+        live entry.
+        """
+        registry = InstanceRegistry()
+        old, new = self._connection("old"), self._connection("new")
+        registry.register("second", old)
+        registry.register("second", new)
+        registry.forget(old)
+        self.assertIs(registry.connection_for("second"), new)
+
     def test_ir_12_re_registering_the_same_connection_is_not_logged(self):
         """IR-12: re-announcing down the connection already held replaced nobody.
 
@@ -218,6 +290,325 @@ class TestInstanceRegistry(unittest.TestCase):
         with self._log() as logged:
             registry.register("second", connection)
         self.assertFalse(logged.called)
+
+
+class TestReconnectWatch(unittest.TestCase):
+    """RC — a command for an instance that dropped."""
+
+    DEFAULT = "first"
+
+    def _world(self, bound=2):
+        """A registry whose 'second' instance has dropped, and sessions on it.
+
+        Returns the registry, the watch, and the sessions bound to 'second'.
+        The clock and the reactor are the caller's to drive — a wait that
+        depended on real time would take ten seconds per case.
+        """
+        registry = InstanceRegistry()
+        default, second = mock.Mock(name="default"), mock.Mock(name="second")
+        registry.register(self.DEFAULT, default)
+        registry.register("second", second)
+        registry.forget(second)
+
+        sessions = [self._portal_session(sessid) for sessid in range(1, bound + 1)]
+        for session in sessions:
+            bind(session, "second")
+
+        watch = ReconnectWatch(registry, lambda: list(sessions))
+        return registry, watch, sessions
+
+    def _portal_session(self, sessid=1):
+        """A Portal session with the surface a real one has, and no more.
+
+        **Deliberately not a bare `mock.Mock()`.** A Portal session is a
+        protocol — `TelnetProtocol` and friends — and a Mock answers to any
+        attribute you invent, so a wrong method name passes here and raises
+        live. That happened: `session.msg(...)` sailed through 148 green tests
+        and crashed in the Portal with `'TelnetProtocol' object has no
+        attribute 'msg'`. `spec_set` is what makes the suite tell the truth.
+        """
+        session = mock.Mock(
+            # BINDING_KEY because `bind()` stamps it, which a real protocol
+            # object allows and this must too.
+            spec_set=["sessid", "data_out", "disconnect", BINDING_KEY]
+        )
+        session.sessid = sessid
+        return session
+
+    def _messages(self, session):
+        """Every line of text sent to one session, in order.
+
+        Evennia's outbound form is `data_out(text=[[message], {}])` — see
+        `PortalSessionHandler.announce_all`, which builds the same shape.
+        """
+        return [
+            call.kwargs["text"][0][0]
+            for call in session.data_out.call_args_list
+            if "text" in call.kwargs
+        ]
+
+    def _handler_on_a_dropped_instance(self):
+        """A session handler whose session is bound to an instance that dropped.
+
+        Built here rather than borrowed from `TestInstallation`: these cases
+        need the registry and the watch in hand, and that fixture keeps both in
+        a closure.
+        """
+        factory = mock.Mock()
+        factory.server_connection = "evennias-global-choice"
+        registry = InstanceRegistry()
+        default, second = mock.Mock(name="default"), mock.Mock(name="second")
+        for connection in (default, second):
+            connection.factory = factory
+        registry.register(self.DEFAULT, default)
+        registry.register("second", second)
+        registry.forget(second)
+
+        session = self._portal_session()
+        bind(session, "second")
+
+        watch = ReconnectWatch(registry, lambda: [session])
+        handler = make_session_handler(
+            self._handler_base(), registry, watch
+        )(factory)
+        return handler, registry, watch, session
+
+    def _handler_base(self):
+        """The same stand-in `TestInstallation` uses, recording where sends go."""
+
+        class FakeSessionHandler(dict):
+            def __init__(self, factory):
+                super().__init__()
+                self.factory = factory
+                self.sent = []
+
+            def _record(self, what, session):
+                self.sent.append((session, self.factory.server_connection, what))
+
+            def data_in(self, session, **kwargs):
+                self._record("data_in", session)
+
+            def connect(self, session):
+                self._record("connect", session)
+
+            def sync(self, session):
+                self._record("sync", session)
+
+            def disconnect(self, session):
+                self._record("disconnect", session)
+
+        return FakeSessionHandler
+
+    def test_rc_01_the_command_is_not_sent_anywhere(self):
+        """RC-01: redirecting reaches a Server that discards it silently.
+
+        Asserted at the handler, because that is where a command actually
+        arrives — and the same call has to reach the watch, or the player is
+        never told and nothing ever times out.
+        """
+        handler, registry, watch, session = self._handler_on_a_dropped_instance()
+        with _patch_default(self.DEFAULT):
+            handler.data_in(session, text="look")
+        self.assertEqual(handler.sent, [])
+        self.assertTrue(watch.waiting_for("second"))
+
+    def test_rc_02_the_player_is_told_the_connection_is_lost(self):
+        """RC-02: a live socket that ignores you is the worst symptom."""
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+        self.assertIn(RECONNECT_LOST_MESSAGE, self._messages(sessions[0]))
+
+    def test_rc_03_the_registry_entry_is_polled_once_a_second(self):
+        """RC-03: the Portal cannot see the Server's redial attempts."""
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "twisted.internet.task.LoopingCall"
+        ) as looping:
+            watch.command_arrived(sessions[0])
+        looping.return_value.start.assert_called_once_with(
+            RECONNECT_POLL_SECONDS, now=False
+        )
+
+    def test_rc_04_a_reattach_during_the_wait_ends_it(self):
+        """RC-04: the ordinary case — the instance comes back in seconds."""
+        registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+            registry.register("second", mock.Mock(name="reattached"))
+            watch._poll("second")
+        self.assertIn(RECONNECT_RESTORED_MESSAGE, self._messages(sessions[0]))
+        self.assertFalse(watch.waiting_for("second"))
+
+    def test_rc_05_play_resumes_after_a_reattach(self):
+        """RC-05: the binding was never changed, so traffic follows it home."""
+        registry, watch, sessions = self._world(bound=1)
+        reattached = mock.Mock(name="reattached")
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+            registry.register("second", reattached)
+            watch._poll("second")
+            self.assertIs(connection_for(registry, sessions[0]), reattached)
+
+    def test_rc_06_a_timeout_ends_the_wait_and_tells_the_player(self):
+        """RC-06: ten seconds of polling with no connection."""
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+            for _ in range(RECONNECT_WAIT_SECONDS + 1):
+                watch._poll("second")
+        self.assertIn(RECONNECT_TIMED_OUT_MESSAGE, self._messages(sessions[0]))
+        self.assertFalse(watch.waiting_for("second"))
+
+    def test_rc_07_the_timeout_moves_the_session_for_real(self):
+        """RC-07: a PCONN, not routing.
+
+        Routing its traffic to the default would leave the player exactly as
+        silent as before — the destination was never told the session exists.
+        """
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.move_session"
+        ) as move:
+            watch.command_arrived(sessions[0])
+            for _ in range(RECONNECT_WAIT_SECONDS + 1):
+                watch._poll("second")
+        self.assertTrue(move.called)
+        self.assertEqual(move.call_args.args[1], sessions[0])
+        self.assertEqual(move.call_args.args[2], self.DEFAULT)
+
+    def test_rc_08_a_second_command_joins_the_running_wait(self):
+        """RC-08: one wait per instance, not per command."""
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "twisted.internet.task.LoopingCall"
+        ) as looping:
+            watch.command_arrived(sessions[0])
+            watch.command_arrived(sessions[0])
+            watch.command_arrived(sessions[0])
+        self.assertEqual(looping.return_value.start.call_count, 1)
+
+    def test_rc_09_a_second_command_does_not_repeat_the_message(self):
+        """RC-09: they have already been told once."""
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+            watch.command_arrived(sessions[0])
+        told = self._messages(sessions[0]).count(RECONNECT_LOST_MESSAGE)
+        self.assertEqual(told, 1)
+
+    def test_rc_10_every_session_on_the_instance_is_told(self):
+        """RC-10: a shard with forty players drops once, for all of them."""
+        _registry, watch, sessions = self._world(bound=3)
+        with _patch_default(self.DEFAULT):
+            watch.command_arrived(sessions[0])
+        for session in sessions:
+            self.assertIn(RECONNECT_LOST_MESSAGE, self._messages(session))
+
+    def test_rc_11_every_session_on_the_instance_is_moved(self):
+        """RC-11: not only the one whose command happened to arrive."""
+        _registry, watch, sessions = self._world(bound=3)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.move_session"
+        ) as move:
+            watch.command_arrived(sessions[0])
+            for _ in range(RECONNECT_WAIT_SECONDS + 1):
+                watch._poll("second")
+        moved = [call.args[1] for call in move.call_args_list]
+        self.assertEqual(sorted(s.sessid for s in moved), [1, 2, 3])
+
+    def test_rc_12_an_unknown_instance_starts_no_wait(self):
+        """RC-12: a typo is not an outage — the default is right for it."""
+        registry = InstanceRegistry()
+        default = mock.Mock(name="default")
+        registry.register(self.DEFAULT, default)
+        session = self._portal_session()
+        bind(session, "never-attached")
+
+        watch = ReconnectWatch(registry, lambda: [session])
+        with _patch_default(self.DEFAULT):
+            self.assertIs(connection_for(registry, session), default)
+            self.assertFalse(watch.waiting_for("never-attached"))
+
+    def test_rc_13_sync_and_disconnect_on_a_dropped_instance_are_silent(self):
+        """RC-13: the Portal talking about a session, not to it.
+
+        `data_in` is the player's command and has someone to answer. These two
+        are the Portal's own bookkeeping — a `disconnect` for a session whose
+        instance is gone has nobody to tell — so they go nowhere and start no
+        wait.
+        """
+        handler, _registry, watch, session = self._handler_on_a_dropped_instance()
+        with _patch_default(self.DEFAULT):
+            handler.sync(session)
+            handler.disconnect(session)
+        self.assertEqual(handler.sent, [])
+        self.assertFalse(watch.waiting_for("second"))
+
+    def test_rc_16_a_session_the_default_will_not_take_is_disconnected(self):
+        """RC-16: no shard, no default — the game is down, not one part of it.
+
+        There is no further fallback worth having at that depth, so the player
+        is told and their connection is closed.
+        """
+        _registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.move_session",
+            return_value=defer.succeed((False, STRANDED)),
+        ):
+            watch.command_arrived(sessions[0])
+            for _ in range(RECONNECT_WAIT_SECONDS + 1):
+                watch._poll("second")
+        self.assertIn(RECONNECT_NOWHERE_MESSAGE, self._messages(sessions[0]))
+        self.assertTrue(sessions[0].disconnect.called)
+
+    def test_rc_17_one_failure_does_not_abandon_the_batch(self):
+        """RC-17: forty players on a dead shard, and the third one fails.
+
+        Handled one at a time, or an exception raised on one player's behalf
+        silently abandons everybody after them in the loop.
+        """
+        _registry, watch, sessions = self._world(bound=3)
+        outcomes = [
+            defer.succeed((True, MOVED)),
+            defer.fail(RuntimeError("this one blew up")),
+            defer.succeed((True, MOVED)),
+        ]
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.move_session",
+            side_effect=outcomes,
+        ) as move:
+            watch.command_arrived(sessions[0])
+            for _ in range(RECONNECT_WAIT_SECONDS + 1):
+                watch._poll("second")
+        # Every session was attempted, not just up to the one that failed.
+        self.assertEqual(move.call_count, 3)
+        self.assertTrue(sessions[1].disconnect.called)
+        self.assertFalse(sessions[0].disconnect.called)
+        self.assertFalse(sessions[2].disconnect.called)
+
+    def test_rc_14_the_drop_is_logged_for_the_operator(self):
+        """RC-14: the operator can tell a 3-second gap from a 3-hour one."""
+        _registry, watch, sessions = self._world(bound=2)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.portal_multiplex_log"
+        ) as logged:
+            watch.command_arrived(sessions[0])
+        self.assertTrue(logged.called)
+        self.assertIn("second", str(logged.call_args.args[0]))
+
+    def test_rc_15_the_outcome_is_logged(self):
+        """RC-15: reconnected, or moved on timeout."""
+        registry, watch, sessions = self._world(bound=1)
+        with _patch_default(self.DEFAULT), mock.patch(
+            "evennia_portal_multiplex.reconnect.portal_multiplex_log"
+        ) as logged:
+            watch.command_arrived(sessions[0])
+            registry.register("second", mock.Mock(name="reattached"))
+            watch._poll("second")
+        written = " ".join(str(call.args[0]) for call in logged.call_args_list)
+        self.assertIn("second", written)
+        self.assertEqual(logged.call_count, 2)
 
 
 class TestMoveCommand(unittest.TestCase):
@@ -1015,7 +1406,12 @@ class TestSessionBinding(unittest.TestCase):
             self.assertIs(connection_for(registry, session), new)
 
     def test_sb_04_falls_back_to_the_default_when_not_attached(self):
-        """SB-04: a stopped instance leaves its sessions somewhere real."""
+        """SB-04: a name the registry has never held is a typo, not a home.
+
+        Distinct from SB-06. An instance that dropped has sessions that belong
+        to it and must not be substituted for; a name nobody has ever attached
+        under has nothing to preserve.
+        """
         registry = InstanceRegistry()
         default = mock.Mock(name="default")
         registry.register(self.DEFAULT, default)
@@ -1024,6 +1420,24 @@ class TestSessionBinding(unittest.TestCase):
         bind(session, "second")
         with self._default():
             self.assertIs(connection_for(registry, session), default)
+
+    def test_sb_06_a_dropped_instance_does_not_fall_back(self):
+        """SB-06: the default is not a substitute for where they belong.
+
+        Sending their traffic there reaches a Server that was never told those
+        sessions exist, which discards it without a word — proven live: three
+        commands produced nothing for the player and nothing in any log.
+        """
+        registry = InstanceRegistry()
+        default, second = mock.Mock(name="default"), mock.Mock(name="second")
+        registry.register(self.DEFAULT, default)
+        registry.register("second", second)
+        registry.forget(second)
+
+        session = self._session()
+        bind(session, "second")
+        with self._default():
+            self.assertIsNone(connection_for(registry, session))
 
     def test_sb_05_binding_one_session_leaves_others_alone(self):
         """SB-05: per-session state, not a shared map keyed loosely."""
@@ -1241,6 +1655,48 @@ class TestMovingASession(unittest.TestCase):
             self._move(registry, session, "second"), (True, MOVED)
         )
 
+    def test_mv_13_a_gone_origin_is_not_asked_to_release(self):
+        """MV-13: there is nothing to send it down, and nothing to send it to.
+
+        `PDISCONN` tells a Server to drop a session of its own and travels over
+        the AMP link. With the origin gone the link is gone, and so is the
+        session it would have dropped — it went with the process. So the release
+        is skipped and the build goes ahead. This is § RC's timeout path.
+        """
+        from evennia.server.portal.amp import PCONN
+
+        registry, default, second = self._world()
+        session = self._session()
+        bind(session, "second")
+        registry.forget(second)
+
+        self.assertEqual(
+            self._move(registry, session, self.DEFAULT), (True, MOVED)
+        )
+        # Nothing was asked of the dead origin, and the destination built one.
+        self.assertEqual(second.sent, [])
+        self.assertEqual(default.sent[-1][0], PCONN)
+
+    def test_mv_14_a_failed_build_with_no_origin_is_left_alone(self):
+        """MV-14: no origin to rebuild at, so nothing is attempted.
+
+        Rolling back would reach for a connection that is not there and raise
+        into the caller — which on the § RC path is a LoopingCall, so the
+        timeout would kill its own watch on the way out.
+        """
+        from evennia.server.portal.amp import PCONN
+
+        registry, default, second = self._world()
+        session = self._session()
+        bind(session, "second")
+        registry.forget(second)
+        default.fail_on = {PCONN}
+
+        # Resolves rather than raising, and nothing went to the dead origin.
+        moved, _outcome = self._move(registry, session, self.DEFAULT)
+        self.assertFalse(moved)
+        self.assertEqual(second.sent, [])
+
     def test_mv_10_a_failed_build_puts_the_session_back(self):
         """MV-10: the origin has already let go by then.
 
@@ -1418,7 +1874,9 @@ class TestInstallation(unittest.TestCase):
             connection.factory = factory
         registry.register(self.DEFAULT, default)
         registry.register("second", second)
-        handler = make_session_handler(self._handler_base(), registry)(factory)
+        handler = make_session_handler(
+            self._handler_base(), registry, ReconnectWatch(registry, lambda: [])
+        )(factory)
         return handler, default, second
 
     def _session(self):
@@ -1623,7 +2081,8 @@ class TestInstallation(unittest.TestCase):
             )
         )
         self.assertTrue(
-            issubclass(make_session_handler(handler_base, InstanceRegistry()),
+            issubclass(make_session_handler(handler_base, InstanceRegistry(),
+                                           ReconnectWatch(InstanceRegistry(), lambda: [])),
                        handler_base)
         )
 

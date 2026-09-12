@@ -209,6 +209,10 @@ log directory from its own `GAME_DIR`.
 | `Not starting: …` | A Server refusing to start, with the reason |
 | `Could not reach the Portal at …` | The Server's AMP client could not dial; Twisted retries |
 | A move that did not simply succeed | Not attached, rejected, stranded, or an id the Portal does not hold |
+| `'<name>' has dropped and N session(s) are waiting for it` | An instance vanished and a player on it sent a command |
+| `'<name>' is back; its sessions resume` | It reattached inside the ten-second wait |
+| `'<name>' did not come back within 10s. Moving N session(s)` | WARN — the wait expired and its players went to the default |
+| `Could not move a session to '<name>' … Disconnecting it` | ERROR — the default would not take them either |
 
 **An instance with no `portalmultiplex.log` never loaded the library.** The file appears at install, so
 its absence means the package was never imported — check `INSTALLED_APPS` on that instance.
@@ -224,3 +228,26 @@ its absence means the package was never imported — check `INSTALLED_APPS` on t
 - **That a Server actually registered** — that one *is* checked. An instance whose announcement did
   not reach the Portal logs the reason and stops, rather than running unreachable. `server_start`
   reports it at the terminal.
+
+## What happens when an instance drops
+
+You do not configure any of this and there is nothing to switch off.
+
+An instance can vanish mid-play — a crash, a reload, a cut link. Evennia's Server redials on its own,
+at one second growing to ten, so most of the time it is back before anyone notices. When a player on
+that instance sends a command in the meantime:
+
+- The command is **dropped**, not sent elsewhere. Another Server was never told that session exists and
+  would discard it silently, leaving the player typing into a socket that never answers.
+- Everyone on that instance is told their connection is lost and is being reconnected.
+- The Portal watches for the instance for **ten seconds**. If it returns, they are told so and play
+  carries on exactly where it was — nothing about the session changed.
+- If it does not return, they are moved to your default instance and meet its login flow, arriving
+  unauthenticated for the same reason any moved session does.
+- If the default will not take them either, the game is down rather than one part of it: they are told
+  and disconnected.
+
+**Your character data is your problem, not this library's.** A player moved this way lands on the
+default instance as a fresh, unauthenticated session. If your instances have separate databases, that
+means the default's character of that name — carrying whatever they were doing on the instance that
+died is yours to arrange.

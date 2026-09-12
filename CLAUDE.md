@@ -15,7 +15,7 @@ whatever protocol it is using. Tagline: **"One portal, many servers, one session
 
 The mechanism is built, unit-tested, and has been run live — three Servers behind one Portal, with a
 session moved between them over telnet, WebSocket and SSH. Read
-[docs/architecture.md](docs/architecture.md) before touching anything — it covers the four processes
+[docs/architecture.md](docs/architecture.md) before touching anything — it covers the five processes
 the library carries out, and its *not designed yet* section is where the loose ends are, including
 those the live runs turned up.
 
@@ -24,7 +24,7 @@ For the design wiki, read [docs/INDEX.md](docs/INDEX.md).
 
 ## Project status
 
-**Working, proven on telnet, WebSocket and SSH.** 123 tests, linters clean, no uncovered cases. All four
+**Working, proven on telnet, WebSocket and SSH.** 148 tests, linters clean, no uncovered cases. All five
 processes are complete — a Server boots and registers or refuses to start, a player connects and lands
 on the default instance, a Server can ask for one of its sessions to be moved, and an admin can reach
 every player on every instance — and all four have been exercised against live instances. No
@@ -33,7 +33,7 @@ the AJAX web client are untested. See [docs/progress.md](docs/progress.md).
 
 ## Where to read first
 
-1. [docs/architecture.md](docs/architecture.md) — the four processes the library carries out, each as
+1. [docs/architecture.md](docs/architecture.md) — the five processes the library carries out, each as
    a step list before the prose, and what is unfinished. **Start here.**
 2. [docs/test-plan.md](docs/test-plan.md) — the cases the library commits to. **A behavioural change
    starts here**, not in the code.
@@ -72,8 +72,14 @@ the AJAX web client are untested. See [docs/progress.md](docs/progress.md).
   untrusted hop to authenticate across. Building ticket auth here would drag in a message bus and then
   an archive behind it, and would solve a problem this transport does not have. It stays with the
   consumer.
-- **Why a session should move.** Rooms, characters, what makes a move legal at this moment: the
-  consumer's. This library moves a session and has no opinion about the reason.
+- **Why a session should move, for game reasons.** Rooms, characters, what makes a move legal at this
+  moment: the consumer's. This library moves a session on request and has no opinion about the reason.
+
+  **The one exception is failure**, and it is not a game reason. An instance that drops leaves its
+  sessions with nowhere to go, and after ten seconds of it not coming back the library moves them to
+  the default itself — nobody asked, and no outcome is returned to anyone. That is error handling, not
+  policy: the alternative is a player typing into a live socket that never answers, which is what it
+  did before. See [docs/test-plan.md](docs/test-plan.md) § RC.
 - **Anything needing a functional dependency.** A message bus, an archive, anything that would drag
   game concepts or another library's runtime in behind it. Evennia, the standard library, and
   `evennia-logging-extension` for the log file every library in this corpus writes through. A
@@ -132,7 +138,7 @@ evennia-portal-multiplex/
 │       ├── __init__.py
 │       ├── apps.py                 # AppConfig — the only way into either process
 │       ├── config.py                # the two settings, and every constant
-│       ├── registry.py              # instance id -> live AMP connection
+│       ├── registry.py              # instance id -> live AMP connection, or None if dropped
 │       ├── services.py              # the Server and Portal service overrides
 │       ├── amp.py                   # the Portal's AMP protocol
 │       ├── amp_client.py            # the Server's AMP protocol and factory; the startup check's call site
@@ -140,6 +146,7 @@ evennia-portal-multiplex/
 │       ├── binding.py               # which instance a session belongs to
 │       ├── sessionhandler.py        # routing what the Portal says about a session
 │       ├── move.py                  # the three-step move
+│       ├── reconnect.py             # waiting out an instance that dropped
 │       ├── query.py                 # MultiplexQueryRegistry
 │       ├── announce.py              # reaching every player, whichever instance
 │       ├── startup.py               # refusing to start when unregistered

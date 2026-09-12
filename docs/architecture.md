@@ -2,10 +2,11 @@
 
 How the library is put together, which module does what, and what is not built yet.
 
-Four processes make up everything it does: **a Server booting and registering**, **a player
-connecting**, **moving a session between Servers**, and **announcing to every player**. Each has its
-own section below, and each starts with the steps in order before the prose explaining them. All four
-are complete; none has been run against live instances.
+Five processes make up everything it does: **a Server booting and registering**, **a player
+connecting**, **moving a session between Servers**, **announcing to every player**, and **an instance
+dropping out from under its players**. Each has its own section below, and each starts with the steps
+in order before the prose explaining them. All five are complete, and all five have been run against
+live instances.
 
 Two functions are the whole consumer API: `send_session` and `broadcast_to_all_instances`.
 
@@ -31,14 +32,15 @@ argument, which is why they test as plain data handling.
 | Module | Does |
 |---|---|
 | `config.py` | The two settings this library reads, and every constant it declares |
-| `registry.py` | Instance id → live AMP connection. No decisions, no sends |
+| `registry.py` | Instance id → live AMP connection, or `None` for one that dropped. No decisions, no sends |
 | `services.py` | Server side: announces this instance's name. Portal side: owns the registry, installs the recording protocol |
 | `amp.py` | The Portal's AMP protocol: records an instance on its handshake, forgets it on disconnect, answers the registry query, and carries out a move |
 | `routing.py` | Points one send at one instance for the duration of a call |
 | `syncing.py` | Names the instance a `PSYNC` reply is being built for, for the duration of a call |
-| `binding.py` | Which instance a session belongs to, and which connection that resolves to |
+| `binding.py` | Which instance a session belongs to, and which connection that resolves to — nothing, where the instance dropped |
 | `sessionhandler.py` | Routes everything the Portal says about a session to the instance holding it, and filters what each instance is handed on a handshake |
 | `move.py` | The move, its outcomes, the command that asks for one, and `send_session` |
+| `reconnect.py` | Waiting out an instance that dropped, and moving its sessions if it does not return |
 | `query.py` | `MultiplexQueryRegistry` — a Server asking its Portal what is attached |
 | `announce.py` | `MultiplexAnnounce` and `broadcast_to_all_instances` — reaching every player at once |
 | `startup.py` | Refusing to start when this instance is not registered |
@@ -389,6 +391,53 @@ the asking, and the responder is a pass-through.
 authenticated: the Portal writes to sockets, not accounts. Right for "the game is going down in five
 minutes"; a consumer wanting only logged-in players wants their own Server-side loop, on each
 instance.
+
+# Process five — an instance that drops out from under its players
+
+Every step from a Server vanishing mid-play to its players being somewhere real again, and who owns
+each one. No gaps: this process is complete.
+
+- **[external]** a Server dies, restarts, or its link is cut
+- **[Evennia]** the Portal's AMP protocol notices and calls `connectionLost`
+- **[library]** the registry keeps that instance's name, mapped to nothing — dropped, not unknown
+- **[Evennia]** meanwhile the Server's own factory redials, at one second growing to ten, indefinitely
+- **[player]** a player on that instance sends a command
+- **[Evennia]** the Portal calls `data_in`
+- **[library]** `connection_for` finds a name it knows with no connection, and answers with nothing
+- **[library]** the command is dropped rather than sent to the default, which would discard it unread
+- **[library]** every session on that instance is told its connection is lost and is being reconnected
+- **[library]** one wait starts for that instance, polling the registry entry once a second
+- **[library]** a command arriving during the wait joins it, and says nothing further
+- **[library]** the instance reattaches: the wait ends, its sessions are told, and play resumes — the
+  binding never changed, so traffic follows it home
+- **[library]** ten seconds pass instead: the wait ends and its sessions are told they are being moved
+- **[library]** each session is moved to the default on its own — `PCONN`, with no release, because the
+  origin it would have released from is gone
+- **[library]** a session the default will not take is told the game is unreachable and disconnected
+- **[library]** every step from the drop onward is logged for the operator
+
+**The trigger is a command arriving, not the connection going.** Nothing is being processed at the
+moment a connection drops, so there is nothing to decide then.
+
+**A dropped connection does not mean the Server is gone**, which is why there is a wait at all.
+Evennia's `AMPClientFactory` is a `ReconnectingClientFactory`, so a reload, a crash under a process
+manager or a network blip is back within one to ten seconds. Only a dead machine stays gone. Acting
+immediately would fire on every routine shard restart.
+
+**The Portal cannot see the redial attempts** — they happen at the other end — so it watches its own
+registry entry, which is what tells it whether the instance is reachable.
+
+**A dropped name is not an unknown one.** A name the registry has never held is a typo or an instance
+that has not booted, and the default is a reasonable answer for it. A name that dropped has sessions
+bound to it, and the default is not a substitute: it was never told those sessions exist, so it
+discards what it is sent without a word. That was the behaviour before this process existed — a player
+typing into a live socket that never answered, with nothing in any log.
+
+**No outcome is returned to anyone.** Nobody called `send_session`; the library decided. The log and
+the player are the only audiences, which is why the move's outcome vocabulary does not appear here.
+
+**Disconnection is the end of the line.** If the default is attached but will not build a session, the
+game is down rather than one shard of it, and no further fallback is worth having at that depth.
 
 # Not designed yet
 

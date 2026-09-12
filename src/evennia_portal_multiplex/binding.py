@@ -39,17 +39,28 @@ def instance_for(session):
 
 
 def connection_for(registry, session):
-    """The live connection a session's traffic should go down.
+    """The live connection a session's traffic should go down, or ``None``.
 
-    Falls back to the default instance when the bound one is not attached: an
-    instance that has stopped should leave its sessions somewhere real rather
-    than somewhere nonexistent.
+    **A name the registry has never held falls back to the default.** That is a
+    typo, or an instance which has not booted — there is nothing to preserve, and
+    traffic has to go somewhere real.
+
+    **A name that dropped does not.** Its sessions belong to it, and the default
+    is not a substitute: a Server that was never told a session exists discards
+    what it is sent without a word, so the player types into a live socket that
+    never answers. Proven live — three commands produced nothing for the player
+    and nothing in any log. `None` here is what lets `reconnect.py` wait for the
+    instance instead. See docs/test-plan.md § SB and § RC.
 
     Resolved through the registry every time rather than cached, so a Server
     that restarts and re-registers is followed. This and `instance_for` are the
     only two answers to "where does this session go", and both come from here —
     two sources agree only for as long as both are maintained.
     """
-    return registry.connection_for(instance_for(session)) or (
-        registry.default_connection()
-    )
+    instance_id = instance_for(session)
+    connection = registry.connection_for(instance_id)
+    if connection is not None:
+        return connection
+    if registry.is_known(instance_id):
+        return None
+    return registry.default_connection()

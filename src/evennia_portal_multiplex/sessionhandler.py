@@ -36,11 +36,11 @@ from .syncing import currently_syncing
 MultiplexPortalSessionHandler = None
 
 
-def make_session_handler(base, registry):
+def make_session_handler(base, registry, watch):
     """Build the handler class, subclassing whatever the consumer had.
 
-    ``registry`` is closed over rather than looked up, so the class has one
-    obvious source for it and a test can supply its own.
+    ``registry`` and ``watch`` are closed over rather than looked up, so the
+    class has one obvious source for each and a test can supply its own.
     """
 
     class MultiplexPortalSessionHandler(base):
@@ -52,8 +52,17 @@ def make_session_handler(base, registry):
             Wrapped, not replaced: Evennia's own applies a character limit, a
             command-rate limit, ``clean_senddata`` and a local echo before it
             sends.
+
+            **An instance that dropped gets the command withheld**, not
+            redirected — a Server never told about a session discards what it
+            is sent, so the player would type into a socket that never answers.
+            The watch takes over: it tells them, waits for the instance, and
+            moves them if it does not come back. See `reconnect.py`.
             """
-            with sending_to(connection_for(registry, session)):
+            connection = connection_for(registry, session)
+            if connection is None:
+                return watch.command_arrived(session)
+            with sending_to(connection):
                 return super().data_in(session, **kwargs)
 
         def connect(self, session):
@@ -78,8 +87,15 @@ def make_session_handler(base, registry):
             Telnet negotiates terminal type, width and compression after the
             session already exists, and calls this when they settle. The
             Server holding the session is the one that needs them.
+
+            Dropped silently for an instance that is gone: this is the Portal
+            talking *about* a session rather than to it, so there is nobody to
+            answer and nothing to wait for.
             """
-            with sending_to(connection_for(registry, session)):
+            connection = connection_for(registry, session)
+            if connection is None:
+                return None
+            with sending_to(connection):
                 return super().sync(session)
 
         def disconnect(self, session):
@@ -88,8 +104,14 @@ def make_session_handler(base, registry):
             Not the last Server to speak, which never had it — and which would
             be asked to drop a session it does not have while the one that
             does keeps it.
+
+            Dropped silently for an instance that is gone, for the same reason
+            as `sync`.
             """
-            with sending_to(connection_for(registry, session)):
+            connection = connection_for(registry, session)
+            if connection is None:
+                return None
+            with sending_to(connection):
                 return super().disconnect(session)
 
         def get_all_sync_data(self):
